@@ -43,7 +43,7 @@
   ; we should ask the process-local store for any optimistic updates for this record
   (try
     (e/server [::e/init record ; assumes pull API was already used, todo use entity api below
-               #_(into {} (d/touch (d/entity db id)))])
+               #_(d/entity db e)])
     #_(catch Pending _ [::e/pending record]) ; never happens
     (catch :default e [::e/failed e])))
 

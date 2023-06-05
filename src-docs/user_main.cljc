@@ -84,7 +84,7 @@
 
 (e/defn Main []
   (binding [dom/node js/document.body]
-    (e/server (wip.demo-todos-optimistic/ATodoListOptimistic))))
+    (e/server (wip.demo-todos-optimistic/AdvancedTodoList.))))
 
 #_
 (e/defn Main []

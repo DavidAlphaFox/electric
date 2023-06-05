@@ -8,13 +8,20 @@
 
 (defn genesis-tempid! [db] (str "hyperfiddle-tempid-" (random-uuid)))
 
-(defn upsert-id! [!seen e] ; todo concurrency?
-  (let [heap @!seen]
-    (if (contains? heap e)
-      (get heap e)
-      (let [ref (->Object)]
-        (swap! !seen assoc e ref)
-        ref))))
+(defn upsert-id! 
+  ([!seen e] ; todo concurrency?
+   (let [heap @!seen]
+     (if (contains? heap e)
+       (get heap e)
+       (let [ref (->Object)]
+         (swap! !seen assoc e ref)
+         ref))))
+  ([!seen e e-prev]
+   (let [heap @!seen
+         ref-prev (get heap e-prev)]
+     (assert ref-prev)
+     (or (get heap e)
+       (do (swap! !seen assoc e ref-prev) ref-prev)))))
 
 (tests
   (def !seen (atom {}))
@@ -31,12 +38,12 @@
   "manifest a unified entity identity which is stabilized across tempid promotions, 
 i.e. make sure promoted tempids reuse the same identity if it had been 
 previously seen."
-  [!ids db record]
+  [!ids tx-report record]
   (let [e (:db/id record)]
     (case (tempid? e)
       true (upsert-id! !ids e)
-      false (if-some [e' ((:ids->tempids db) e)] ; tempid was promoted
-              (upsert-id! !ids e') ; unify with previously seen identity 
+      false (if-some [e' ((:ids->tempids tx-report) e)] ; tempid was promoted 
+              (upsert-id! !ids e e') ; unify with previously seen identity 
               (upsert-id! !ids e)))))
 
 (tests

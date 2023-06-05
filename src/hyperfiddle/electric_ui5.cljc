@@ -2,15 +2,18 @@
   #?(:cljs (:require-macros hyperfiddle.electric-ui5))
   (:refer-clojure :exclude [long double keyword symbol uuid range])
   (:require clojure.edn
+            [contrib.identity :refer [tempid?]]
             contrib.str
             [hyperfiddle.electric :as e]
             [hyperfiddle.electric-dom2 :as dom]
+            [hyperfiddle.electric-ui4 :as ui4]
             [missionary.core :as m]
             [contrib.debug :as dbg]))
 
 (e/def local?)
 (def tempid? (some-fn nil? string?))
 
+; todo, don't use for-event-pending-switch
 (defmacro control [event-type parse unparse v V! setter & body]
   `(let [[state# v#] (e/for-event-pending-switch [e# (e/listen> dom/node ~event-type)]
                        (some->> (~parse e#) (new ~V!)))]
@@ -21,7 +24,7 @@
      ~@body
      [state# v#]))
 
-(defmacro input [v V! & body]
+(defmacro input [v V! & body] ; todo remove V!
   `(dom/input
      (let [[state# v#] (control "input" #(-> % .-target .-value) identity ~v ~V! dom/set-val)
            color# (if local? "blue" (case state# ::e/init "gray", ::e/ok "green", ::e/pending "yellow", ::e/failed "red"))]
@@ -30,14 +33,41 @@
        (case state# ::e/failed (.error js/console v#) nil)
        ~@body)))
 
-(defmacro entity [record EnsureEntity & body]
-  `(dom/div (dom/text "entity" (:hf/stable-id ~record))
-     (let [[state# e#] (new ~EnsureEntity (:db/id ~record) ~record)
+(e/defn On-input-submit [node]
+  ; (assert node is type input)
+  (new (m/reductions {} nil
+         (m/observe (fn [!] (e/dom-listener node "keydown"
+                              #(some-> (ui4/?read-line! node %) !)))))))
+
+(e/defn ReadEntity [{:keys [db/id] :as record}]
+  ; we should ask the process-local store for any optimistic updates for this record
+  (try
+    (e/server [::e/init record ; assumes pull API was already used, todo use entity api below
+               #_(into {} (d/touch (d/entity db id)))])
+    #_(catch Pending _ [::e/pending record]) ; never happens
+    (catch :default e [::e/failed e])))
+
+(e/defn CreateEntity [{:keys [db/id] :as record}]
+  (try ; create is never ::e/init -- what is this?
+    (case (d/transact !conn [record]) ; todo ensure, not raw transact, don't fail if someone else beat us
+      ; (when-not (d/entity db id)))
+      #_[::e/ok (into {} (d/touch (d/entity db (ids->tempids id))))])  ; no need to query, a branch above switches
+    (catch Pending _ [::e/pending record]) ; optimistic
+    (catch :default e [::e/failed e])))
+
+(e/defn EnsureEntity [{:keys [db/id] :as record}] ; optimistic record, pre-pulled
+  (if-not (tempid? id)
+    (ReadEntity. record)
+    (CreateEntity. record))) ; todo must be idempotent
+
+(defmacro entity [record & body]
+  `(dom/div (dom/text "entity" (:db/id ~record))
+     (let [[state# e#] (new ~EnsureEntity ~record)
            color# (case state# ::e/init "gray", ::e/ok "green", ::e/pending "yellow", ::e/failed "red")]  ; tooltip
        (dom/style {:border (str "2px solid " color#)})
-       (case state# ::e/failed (.error js/console e#) nil) 
-       (binding [local? (tempid? (:db/id ~record))] ;; mark entity local for downstream code
-         ~@body))))
+       (case state# ::e/failed (.error js/console e#) nil)
+       ;(binding [local? (tempid? (:db/id ~record))]) ;; mark entity local for downstream code
+       ~@body)))
 
 #?(:cljs (defn value [^js e] (.-target.value e))) ; workaround inference warnings, todo rename
 #?(:cljs (defn checked [^js e] (.-target.checked e)))

@@ -56,22 +56,6 @@
           ;(dom/div {:class "todo-items"}) 
           
           (MasterList. TodoItem)
-                    
-          (let [optimistic-records
-                (dom/input (dom/props {:placeholder "Buy milk"}) ; todo move into TodoItem
-                  (->> (m/observe (fn [!] (e/dom-listener dom/node "keydown" #(some-> (ui/?read-line! dom/node %) !))))
-                    (m/eduction (map (fn [input-val]
-                                       {:hf/stable-id (random-uuid)
-                                        :task/description input-val
-                                        :task/status :active
-                                        #_#_:task/order (e/server (swap! !order-id inc))})))
-                    (m/reductions conj [])
-                    new))]
-            (prn optimistic-records) 
-
-            (e/client #_e/server ; fixme
-              (e/for-by :hf/stable-id [record (into #{} cat [(e/server (todo-records db)) optimistic-records])]
-                (TodoItem. record))))
           
           (dom/p (dom/props {:class "counter"})
             (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count db))))

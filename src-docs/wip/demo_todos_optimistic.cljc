@@ -1,6 +1,7 @@
 (ns wip.demo-todos-optimistic
   (:import [hyperfiddle.electric Pending])
-  (:require #?(:clj [datomic.api :as d]) ; database on server
+  (:require [contrib.identity :refer [tempid?]]
+            #?(:clj [datomic.api :as d]) ; database on server
             [hyperfiddle.electric :as e]
             [hyperfiddle.electric-dom2 :as dom]
             [missionary.core :as m]
@@ -83,38 +84,72 @@
                       :where [?e :task/status]] db)
             #_(sort-by :task/order #(compare %2 %1)))))
 
-(def tempid? (some-fn nil? string?))
-
-(e/defn ReadEntity [id]
-  (try
-    (e/server [::e/init (into {} (d/touch (d/entity db id)))])
-    (catch Pending _ [::e/pending nil])
-    (catch :default e [::e/failed e])))
-
-(e/defn CreateEntity [id record]
-  (try ; create is never ::e/init
-    (e/server
-      (when-not (d/entity db id)
-        (case (new Tx! [record])     ; returns tx-report which has :ids->tempids
-          [::e/ok (into {} (d/touch (d/entity db id)))])))
-    (catch Pending _ [::e/pending record]) ; optimistic
-    (catch :default e [::e/failed e])))
-
-(e/defn EnsureEntity [id record]
-  (if-not (tempid? id)
-    (ReadEntity. id)
-    (CreateEntity. id record))) ; todo must be idempotent
-
-(e/defn TodoItem [record]
+(e/defn TodoItem [{:keys [db/id] :as record}] ; pre-pulled, todo entity api
   (e/client
     (dom/div (dom/style {:display "flex", :align-items "center"})
-      (ui5/entity record EnsureEntity
+      (ui5/entity record
         (ui5/checkbox (= :done (:task/status record))
-          (e/fn [checked?] (e/server (new Tx! [[:db/add (:db/id record) :task/status (if checked? :done :active)]]))))
+          (e/fn [checked?]
+            (e/server (new Tx! [[:db/add (:db/id record) :task/status (if checked? :done :active)]]))))
         (ui5/input (:task/description record)
           (e/fn [v] (e/server (new Tx! [[:db/add (:db/id record) :task/description v]]))))))))
 
-(e/defn AdvancedTodoList []
+(e/defn TodoItem-create "maintains a local index of created entities"
+  [kf record]
+  (let [!local-index (atom {}), local-index (e/watch !local-index) ; perhaps global to the client, is it a datascript db?
+        local-tempids (vals local-index)
+        promoted-tempids (vals (:ids->tempids db)) ; includes those from other sessions
+        local-promotions (clojure.set/intersection promoted-tempids local-tempids)]
+
+    (when (seq local-promotions) ; these genesis records have been promoted 
+      ; and now appear in the masterlist query, so stop tracking them locally.
+      (swap! !local-index #(apply dissoc % local-promotions)))
+
+    (ui5/input (:task/description record)
+      (dom/props {:placeholder "Buy milk"})
+      (when-some [v (ui5/On-input-submit. dom/node)] ; commit?
+        (let [local-record {:db/id (contrib.identity/genesis-tempid! db)
+                            :task/description b
+                            :task/status :active
+                            #_#_:task/order (e/server (swap! !order-id inc))}]
+          (swap! !local-index assoc (kf local-record) local-record))
+        nil))
+    local-index)) ; return also the local records, for use in optimistic queries
+
+(defn merge-unordered [kf local-records ?records]
+  (vals (reduce (fn [acc x] (assoc acc (kf x) x))
+          (group-by kf local-records)
+          ?records)))
+
+(e/defn MasterList
+  "encapsulates both rendering the table and also adding elements to it, in 
+order to stabilize identity"
+  [query-records] ; specifically not entities due to the optimism strategy
+  (e/client 
+    (let [!ids (atom {}) ; tempid or reified id -> process-unique identity
+          stable-kf (partial contrib.identity/entity-id-locally-stabilzied! db)
+          local-index (TodoItem-create. stable-kf {:task/status :active}) 
+          
+          ; does this operate on records or entity ids?
+          ; note, datomic entity api is has broken equality anyway
+          records (merge-unordered stable-kf
+                    (vals local-index)
+                    (try (e/server (query-records))
+                      (catch Pending _)))]
+      
+      ; where is the transaction? Where is the 4-colored result on the create?
+      ; it MUST be in todo-item
+      ; TodoItem-create does not transact as it only submits at the last instant
+      ; local-index is a create REQUEST ?
+      
+      ; todo move query diffing to server
+      (e/for-by stable-kf [record records] ; must include genesised records, for stability
+        ; Ensure local entities here, they've been submitted
+        ; What if the local-records end up in two places? That's a race, both will ensure
+        ; existance, ok, one will win (so long as tempids are not reused and remain valid)
+        (TodoItem. record)))))
+
+(e/defn TodoListOptimistic []
   (e/server
     (binding [db (e/watch !db), Tx! (e/fn [tx] (new (e/task->cp (tx! tx))) nil)]
       ;; (d/transact !conn schema)
@@ -125,22 +160,7 @@
         (FailRate. 0 10)
         (dom/div (dom/props {:class "todo-list"})
           ;(dom/div {:class "todo-items"})
-          (let [optimistic-records
-                (dom/input (dom/props {:placeholder "Buy milk"}) ; todo move into TodoItem
-                  (->> (m/observe (fn [!] (e/dom-listener dom/node "keydown" #(some-> (ui/?read-line! dom/node %) !) {})))
-                    (m/eduction (map (fn [input-val]
-                                       (let [id (random-uuid)]
-                                         {:hf/stable-id id
-                                          :task/description input-val
-                                          :task/status :active
-                                          #_#_:task/order (e/server (swap! !order-id inc))}))))
-                    (m/reductions conj [])
-                    new))]
-            (e/client #_e/server   ; fixme 
-              (e/for-by :hf/stable-id [record (vals (reduce (fn [ac nx] (assoc ac (:hf/stable-id nx) nx))
-                                                      (contrib.data/index-by :hf/stable-id optimistic-records)
-                                                      (e/server (todo-records db))))]
-                (TodoItem. record))))
+          (MasterList. (fn [] (todo-records db)))
           (dom/p (dom/props {:class "counter"})
             (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count db))))
             (dom/text " items left")))))))

@@ -8,7 +8,8 @@
             [hyperfiddle.electric-ui4 :as ui]
             [hyperfiddle.electric-ui5 :as ui5]
             [contrib.data]
-            [contrib.debug :as dbg]))
+            [contrib.debug :as dbg]
+            [hyperfiddle.api :as hf]))
 
 ;; showcases how to render an item optimistically and without e/for-event
 ;; missing:
@@ -85,21 +86,54 @@
                       :where [?e :task/status]] db)
             #_(sort-by :task/order #(compare %2 %1)))))
 
-(e/defn TodoItem [{:keys [db/id] :as record}] ; pre-pulled, todo entity api
+; Typing into fields should emit txns right away (with green dots) – locally
+; the commit event is on the popover, which emits the txn up to the caller
+
+(e/defn TodoItem [{:keys [db/id] :as ?record} submit!] ; pre-pulled, todo entity api
   (e/client
     (dom/div (dom/style {:display "flex", :align-items "center"})
-      (ui5/entity record
-        (ui5/checkbox (= :done (:task/status record))
-          (e/fn [checked?]
-            (e/server (new Tx! [[:db/add (:db/id record) :task/status (if checked? :done :active)]]))))
+      ; who transacts these fields and monitors progress?
+      ; They auto-save, use hf/branch to add commit/discard semantics.
+      ; "Save" here can mean transact, or really "sync to server so data is safe and not lost"
+      ;(e/server)
+      (hf/into-tx ; can the tx-monoid be made implicit via side channel?
         
-        ; unify the inputs
-        ; is the input the color? Yes and it only colors in the for-loop, not the create!
-        (ui5/input (:task/description record)
-          (e/fn [v] (e/server (new Tx! [[:db/add (:db/id record) :task/description v]]))))))))
+        ; ui5/fForm - bind the db/id in scope? and branch here for atomicity?
+        
+        (ui5/Field.
+          :record ?record ; should be lazy loaded - entity api. This is over-fetched
+          :a :task/status
+          :Control ui5/Checkbox
+          :parse #(case % :done true, :active false)
+          :unparse #(case % true :done, false :active)
+          :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
+        
+        (ui5/Field.
+          :record ?record
+          :a :task/description
+          :Control ui5/Input
+          :parse .
+          :unparse .
+          :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))))
 
-(e/defn TodoItem-create "maintains a local index of created entities"
-  [kf record]
+(e/defn TodoItemCreate [submit!] ; submit is the stage commit? this is a branch?
+  ; no checkbox here
+  (ui5/input "" ; esc to revert. This input has no colors actually due to being a glorified popover submit button?
+    ; its a colored input but perhaps we suppress the styles as the popover is inlined?
+    (dom/props {:placeholder "Buy milk"})
+    (when-some [v (ui5/On-input-submit. dom/node)] ; discrete, wire this to staging area submit.
+      (submit! {:task/description b
+                :task/status :active
+                #_#_:task/order (e/server (swap! !order-id inc))}))
+    nil))
+
+; Do all controls have submit? No, all controls emit value signals.
+; Staging area controls submit.
+; Inputs have special event callbacks to submit, then. (Are they missionary flows?)
+
+(e/defn CreateController
+  "maintains a local index of created entities by watching the Datomic tx-report"
+  [kf Body]
   (let [!local-index (atom {}), local-index (e/watch !local-index) ; perhaps global to the client, is it a datascript db?
         local-tempids (vals local-index)
         promoted-tempids (vals (:ids->tempids >tx-report)) ; includes those from other sessions
@@ -109,16 +143,15 @@
       ; and now appear in the masterlist query, so stop tracking them locally.
       (swap! !local-index #(apply dissoc % local-promotions))) ; "birth"
 
-    (ui5/input (:task/description record)
-      (dom/props {:placeholder "Buy milk"})
-      (when-some [v (ui5/On-input-submit. dom/node)] ; commit?
-        (let [local-record {:db/id (contrib.identity/genesis-tempid! db)
-                            :task/description b
-                            :task/status :active
-                            #_#_:task/order (e/server (swap! !order-id inc))}]
-          (swap! !local-index assoc (kf local-record) local-record))
-        nil))
-    local-index)) ; return also the local records, for use in optimistic queries
+    (let [_ (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
+                        (e/fn []
+                          (e/server
+                            (Body. nil (fn submit! [local-record] ; todo: commit/discard wired up to the widget events
+                                         (->> local-record
+                                           (merge {:db/id (contrib.identity/genesis-tempid! db)})
+                                           ; commit and close the popover
+                                           (as-> x (swap! !local-index assoc (kf x) x)))))))))] ; discrete
+      local-index))) ; return also the local records, for use in optimistic queries
 
 (defn merge-unordered [kf local-records ?records]
   (vals (reduce (fn [acc x] (assoc acc (kf x) x))
@@ -132,7 +165,7 @@ order to stabilize identity"
   (e/client 
     (let [!ids (atom {}) ; #tempid and/or reified id -> process-unique identity
           stable-kf (partial contrib.identity/entity-id-locally-stabilzied! !ids tx-report) ; todo
-          local-index (TodoItem-create. stable-kf #_{:task/status :active})
+          local-index (CreateController. stable-kf TodoItemCreate {:task/status :active})
 
           ; does this operate on records or entity ids?
           ; note, datomic entity api is has broken equality anyway

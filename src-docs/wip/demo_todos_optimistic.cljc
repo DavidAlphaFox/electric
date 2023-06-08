@@ -95,26 +95,26 @@
       ; who transacts these fields and monitors progress?
       ; They auto-save, use hf/branch to add commit/discard semantics.
       ; "Save" here can mean transact, or really "sync to server so data is safe and not lost"
-      ;(e/server)
-      (hf/into-tx ; can the tx-monoid be made implicit via side channel?
-        
-        ; ui5/fForm - bind the db/id in scope? and branch here for atomicity?
-        
-        (ui5/Field.
-          :record ?record ; should be lazy loaded - entity api. This is over-fetched
-          :a :task/status
-          :Control ui5/Checkbox
-          :parse #(case % :done true, :active false)
-          :unparse #(case % true :done, false :active)
-          :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
-        
-        (ui5/Field.
-          :record ?record
-          :a :task/description
-          :Control ui5/Input
-          :parse .
-          :unparse .
-          :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))))
+      
+      (e/server
+        (hf/into-tx ; can the tx-monoid be made implicit via side channel?
+          ; ui5/fForm - bind the db/id in scope? and branch here for atomicity?
+          ; v-request-server
+          (ui5/Field.
+            :record ?record ; should be lazy loaded - entity api. This is over-fetched
+            :a 
+            :Control ui5/Checkbox
+            :parse #(case % :done true, :active false)
+            :unparse #(case % true :done, false :active)
+            :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
+          
+          (ui5/Field.
+            :record ?record
+            :a :task/description
+            :Control ui5/Input
+            :parse .
+            :unparse .
+            :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}])))))))
 
 (e/defn TodoItemCreate [submit!] ; submit is the stage commit? this is a branch?
   ; no checkbox here

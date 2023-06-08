@@ -20,7 +20,7 @@
                        (some->> (~parse e#) (new ~V!)))]
      #_(dom/style {:background-color (when (= ::e/pending state#) "yellow")}) ; collision
      ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
-     (when-some [v# (when (and (not (new dom/Focused?)) (#{::e/init ::e/ok} state#)) ~v)]
+     (when-some [v# (when (and (not (new dom/Focused? dom/node)) (#{::e/init ::e/ok} state#)) ~v)]
        (~setter dom/node (~unparse v#))) ; js coerce
      ~@body
      [state# v#]))
@@ -64,78 +64,115 @@
 (defn progress-color [state]
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
 
+; What is the staging area anyway?
+; Why is it tied to Datomic?
+; Under what circumstances is something a control accepted, rejected by the server?
+; -- duplicate email address
+; ... accepted and "safe", and also invalid
+
+; what is red status?
+; it failed
+; at which level did it fail?
+; did the value fail to sync over network?
+; is the value invalid in the context of the view of the field? the form?
+; did the transaction at form level fail?
+
+; What does user care about?
+;  - is my edit safe (acknowledged) - don't let me lose data
+;  - control over the submit action
+;  - is the submit safe
+;  - did the submit succeed
+
+; Do we ensure at field, form, ... each level?
+; why not?
+; once edit is ultimately accepted by a higher level, the tempid is promoted in that layer
+; thus indexing responsibility propagates upwards?
+
+; Progress is necessary at each level of interaction:
+;  - optimistic value edits   - V
+;  - txn at field level       - d/with: EAV + field-txn   
+;  - d/with at form level     - d/with: N * (EAV + field-txn) + form-txn
+;  - d/transact at top level  - final rebase
+
+; optimism
+; optimistic queries, create-new
+
+
+; WRONG: To auto-sync and monitor sync progress, we must be at the EAV abstraction 
+; level which is the minimum unit of persistence to Datomic
+
+
+#(:clj (def !v'-server (atom nil))) ; out of band return
+(e/def v'-server (e/server (e/watch !v'-server)))
+
+#(:cljs (def !state-client (atom nil))) ; out of band return
+(e/def state-client (e/client (e/watch !state-client)))
+
 (e/defn Field
-  "To auto-sync and monitor sync progress, we must be at the EAV abstraction level
-which is the minimum unit of persistence to Datomic"
-  [{:keys [record #_e a Control parse unparse txn]}]
-  (let [v (get ?record a)
-
-        ; domain -> control transformation -- parse, unparse -- :done to true
-        ; control -> physical/DOM transformation -- getter, setter -- target-checked to true, true to target-checked
-        
-        tx (when-some [v' (unparse (Control. (parse v)))] ; domain->control transformation
-             (txn v'))
-        
-        ; DomInputController must own the server io.
-        ; Can the Control be separated from the Controller? YES!
-        ; the control is a rendering of the status.
-
-         ; local txn unit, likely in a branch but not always.
-        status (Ensure. tx)] ; (V!.) -- this goes into the control i think
-
-    (case status ::e/failed (.warn js/console v) nil) ; debug
-    tx)) ; may not be transacted yet, even if this control is green/safe
+  "[server bias] orchestration helper for declarative config"
+  [{:keys [record a Control parse unparse txn]}]
+  ; domain -> control transformation -- parse, unparse -- :done to true
+  ; control -> physical/DOM transformation -- getter, setter -- target-checked to true, true to target-checked
+  ; DomInputController must own the server io.
+  ; what if we send the physical value repr to the server
+  ; and run txn on the server? 
+  (e/server
+    (let [v-domain (get record a)
+          v-physical (parse v-domain)
+          v'-physical (Control. v-physical) ; optimistic, can it rollback? ; monitor progress here? 
+          v'-domain (unparse v'-physical)
+          field-tx (txn v'-domain)]
+      field-tx)))
 
 (e/defn DOMInputController
+  "[server bias, returns state-client and v'-server]"
   ;"read and write a single control's DOM with optimistic state and rollback"
-  [event-type v-server ref!]
-  (when-some [e (e/listen> dom/node ~event-type)] ; CT event signal is mostly nil
-    (let [v-local (parse (ref! (.-target e)))]
-      ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
-      (when-some [v-request (when (and
-                                    (not (dom/Focused?.))
-                                    (#{::e/init ::e/ok} status)) ; !!!!!!!!!!!
-                            v-local)]
-        (ref! v-request)) ; js coerce 
-      v-request #_[state v-request])))
+          ; here we setup side channel return values for multi-colored return values, 
+        ; in order to avoid an undesired transfer.
+        ;   1. status (green dot), client-side (includes optimistic value)
+        ;   2. v', server-side (so that it's safe, this is what the green dot is monitoring)
+        ;   3. v'-client ??? 
+  ; v' may not be transacted yet, even if this control is green/safe
+  [node event-type v-server ref!]
+  (e/client
+    (when-some [e (e/listen> node event-type)] ; CT event signal is mostly nil
+      (let [v'-local (parse (ref! (.-target e)))
+            
+            ; split middle SyncController from DomInputontroller
+            [[status v'-local :as state-client]
+             (try
+               [::ok (e/server (reset! v'-server v'-local) nil)] ; make it "safe" immediately, + side channel
+               (catch Pending _ [::pending v'-local]) ; optimistic local value
+               (catch :default ex [::failed ex]))]] ; impossible
+        (reset! !state-client state-client) ; side channel
+        
+        ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
+        (when-some [v-server (when (and (not (dom/Focused?. dom/node)) ; prefer local when focused
+                                     (#{::e/init ::e/ok} status)) ; keep local until safe
+                               v-server)] ; overwrite local value with newer server value
+          (ref! v-server))))))
 
 #?(:cljs (defn -target-value [^js e] (.-target.value e))) ; workaround inference warnings
 #?(:cljs (defn -node-checked!
            ([node] (.-checked node))
-           ([node checked] (set! (.-checked node) checked))))
+           ([node checked] (set! (.-checked node) checked)))) ; js coerce
 
-(e/defn Checkbox [checked-server]
-  (dom/input (dom/props {:type "checkbox"})
-    (let [checked-request (DOMInputController. "change" checked (partial -node-checked! dom/node))]
-      (dom/style {:outline (str "2px solid " (progress-color state))})
-      checked-request)))
+(e/defn Checkbox 
+  "[server bias]"
+  [checked-server]
+  (e/client
+    (dom/input (dom/props {:type "checkbox"})
+      (e/server
+        (let [v' (DOMInputController. "change" checked (e/client (partial -node-checked! dom/node)))] ; fix color
+          (e/client
+            (let [[status v'] state-client]
+              (dom/style {:outline (str "2px solid " (progress-color status))})))
+          v')))))
 
-#_
-(defmacro checkbox [v V! & body]
-  `(dom/input (dom/props {:type "checkbox"})
-     (let [[state# v#] (control "change" -node-checked! identity
-                         ~v ~V! #(set! (.-checked %) %2) ~@body)]
-       (dom/style {:outline (str "2px solid " (progress-color state#))}))))
 
-;; (defmacro checkbox [record V V! EnsureEntity & body]
-;;   ; (reset! util/*!side-channel* 42)
-;;   `(dom/input (dom/props {:type "checkbox"})
-;;      (let [[state# v#] (control "change" checked identity ~record ~V! #(set! (.-checked %) %2)
-;;                          ~@body)]
+#_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
-;;        (let [[state# e#] (new ~EnsureEntity (:db/id ~record) ~record)
-;;              v# (new ~V e#)
-;;              color# (case state# 
-;;                       ::e/init "gray"
-;;                       ::e/ok "green"
-;;                       ::e/pending "yellow"
-;;                       ::e/failed "red")] ; tooltip
-;;          (dom/style {:outline (str "2px solid " color#)})
+;; (e/defn ServerInc [x]
+;;   (inc x))
 
-;;          #_(case state#
-;;              ::e/pending (dom/text "⌛ " v#)
-;;              ::e/failed
-;;              (do (dom/text "💀 " v#)
-;;                (ui/button (e/fn [] #_(reset! !err nil)) ; retry
-;;                  (dom/text "⟳")) (dom/text " (" (ex-message v#) ")"))
-;;              (::e/ok ::e/init) .)))))
+;; (e/server (ServerInc. 42))

@@ -458,7 +458,7 @@ progress of the most recently completed branch."
   [bind & body]
   `(let [!state# (atom [::init]), state# (hyperfiddle.electric/watch !state#)]
      (if (seq (for-event ~bind
-                (try (reduced (reset! !state# [::ok (do ~@body)]))
+                (try (reduced (reset! !state# [::ok (do ~@body)])) ; e.g. transact
                      (catch Pending ex#)
                      (catch Cancelled ex# (reduced nil))
                      (catch ~(if (:ns &env) :default `Throwable) ex# 

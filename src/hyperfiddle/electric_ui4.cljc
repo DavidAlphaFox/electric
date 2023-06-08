@@ -18,7 +18,7 @@
                        (some->> (~parse e#) (new ~V!)))]
      (dom/style {:background-color (when (= ::e/pending state#) "yellow")})
      ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
-     (when-some [v# (when (and (not (new dom/Focused?)) (#{::e/init ::e/ok} state#)) ~v)]
+     (when-some [v# (when (and (not (new dom/Focused? dom/node)) (#{::e/init ::e/ok} state#)) ~v)]
        (~setter dom/node (~unparse v#))) ; js coerce
      ~@body
      (case state# (::e/pending ::e/failed) (throw v#) (::e/init ::e/ok) v#)))

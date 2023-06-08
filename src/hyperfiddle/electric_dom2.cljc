@@ -193,8 +193,8 @@
 
 (defmacro on-pending [pending-body & body] `(try (do ~@body) (catch Pending e# ~pending-body (throw e#))))
 
-(e/defn Focused? "Returns whether this DOM `node` is focused."
-  []
+(e/defn Focused? "Returns whether this DOM `node` is focused." 
+  [node] ; I don't see much benefit from the implicit arity
   (->> (mx/mix
          (e/listen> node "focus" (constantly true))
          (e/listen> node "blur" (constantly false)))

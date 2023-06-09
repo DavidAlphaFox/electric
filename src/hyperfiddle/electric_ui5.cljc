@@ -14,32 +14,13 @@
 (e/def local?)
 (def tempid? (some-fn nil? string?))
 
-; todo, don't use for-event-pending-switch
-(defmacro control [event-type parse unparse v V! setter & body]
-  `(let [[state# v#] (e/for-event-pending-switch [e# (e/listen> dom/node ~event-type)]
-                       (some->> (~parse e#) (new ~V!)))]
-     #_(dom/style {:background-color (when (= ::e/pending state#) "yellow")}) ; collision
-     ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
-     (when-some [v# (when (and (not (new dom/Focused? dom/node)) (#{::e/init ::e/ok} state#)) ~v)]
-       (~setter dom/node (~unparse v#))) ; js coerce
-     ~@body
-     [state# v#]))
-
-(defmacro input [v V! & body] ; todo remove V!
-  `(dom/input
-     (let [[state# v#] (control "input" #(-> % .-target .-value) identity ~v ~V! dom/set-val)
-           color# (if local? "blue" (case state# ::e/init "gray", ::e/ok "green", ::e/pending "yellow", ::e/failed "red"))]
-       (dom/style {:border-width "2px", :border-style "solid", :border-color color#, :border-radius "0.2em"})
-       #_(when local? (dom/props {:disabled true})) ; why? Not sure
-       (case state# ::e/failed (.error js/console v#) nil)
-       ~@body)))
-
 (e/defn On-input-submit [node]
   ; (assert node is type input)
   (new (m/reductions {} nil
          (m/observe (fn [!] (e/dom-listener node "keydown"
                               #(some-> (ui4/?read-line! node %) !)))))))
 
+#_#_#_
 (e/defn ReadEntity [{:keys [db/id] :as record}]
   ; we should ask the process-local store for any optimistic updates for this record
   (try
@@ -97,17 +78,6 @@
 ; optimism
 ; optimistic queries, create-new
 
-
-; WRONG: To auto-sync and monitor sync progress, we must be at the EAV abstraction 
-; level which is the minimum unit of persistence to Datomic
-
-
-#(:clj (def !v'-server (atom nil))) ; out of band return
-(e/def v'-server (e/server (e/watch !v'-server)))
-
-#(:cljs (def !state-client (atom nil))) ; out of band return
-(e/def state-client (e/client (e/watch !state-client)))
-
 (e/defn Field
   "[server bias] orchestration helper for declarative config"
   [{:keys [record a Control parse unparse txn]}]
@@ -124,28 +94,38 @@
           field-tx (txn v'-domain)]
       field-tx)))
 
+#(:clj (def !v'-server (atom nil))) ; out of band return
+(e/def v'-server (e/server (e/watch !v'-server))) ; todo cannot be global
+
+; can we use currying to fix this concern?
+#(:cljs (def !sync (atom nil))) ; out of band return
+(e/def sync (e/client (e/watch !sync))) ; todo cannot be global
+
+
+;   1. status (green dot), client-side (includes optimistic value)
+;   2. v', server-side (so that it's safe, this is what the green dot is monitoring)
+;   3. v'-client ??? 
+(e/defn SyncController 
+  "by side channel, return both `v'-server` and `[status v'-optimistic]` in order to 
+avoid unintentional transfer which damages the optimistic"
+  [v'-local]
+  (e/client
+    (reset! !sync ; side channel
+      (try
+        [::ok (e/server (reset! v'-server v'-local) nil)] ; make it "safe" immediately, + side channel
+        (catch Pending _ [::pending v'-local]) ; optimistic, must not lag
+        (catch :default ex [::failed ex]))))) ; impossible
+
 (e/defn DOMInputController
   "[server bias, returns state-client and v'-server]"
   ;"read and write a single control's DOM with optimistic state and rollback"
-          ; here we setup side channel return values for multi-colored return values, 
-        ; in order to avoid an undesired transfer.
-        ;   1. status (green dot), client-side (includes optimistic value)
-        ;   2. v', server-side (so that it's safe, this is what the green dot is monitoring)
-        ;   3. v'-client ??? 
   ; v' may not be transacted yet, even if this control is green/safe
-  [node event-type v-server ref!]
+  [node event-type v-server keep-fn ref!]
   (e/client
-    (when-some [e (e/listen> node event-type)] ; CT event signal is mostly nil
+    ;(e/fn [ref!]) ; no e/fn transfer
+    (when-some [e (e/listen> node event-type keep-fn)] ; CT event signal is mostly nil
       (let [v'-local (parse (ref! (.-target e)))
-            
-            ; split middle SyncController from DomInputontroller
-            [[status v'-local :as state-client]
-             (try
-               [::ok (e/server (reset! v'-server v'-local) nil)] ; make it "safe" immediately, + side channel
-               (catch Pending _ [::pending v'-local]) ; optimistic local value
-               (catch :default ex [::failed ex]))]] ; impossible
-        (reset! !state-client state-client) ; side channel
-        
+            [status _] (SyncController. v'-local)]
         ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
         (when-some [v-server (when (and (not (dom/Focused?. dom/node)) ; prefer local when focused
                                      (#{::e/init ::e/ok} status)) ; keep local until safe
@@ -153,22 +133,45 @@
           (ref! v-server))))))
 
 #?(:cljs (defn -target-value [^js e] (.-target.value e))) ; workaround inference warnings
+#?(:cljs (defn -node-value!
+           ([node] (.-value node))
+           ([node v] (set! (.-value node) v))))
 #?(:cljs (defn -node-checked!
            ([node] (.-checked node))
            ([node checked] (set! (.-checked node) checked)))) ; js coerce
 
-(e/defn Checkbox 
+(e/defn Checkbox
   "[server bias]"
   [checked-server]
   (e/client
     (dom/input (dom/props {:type "checkbox"})
       (e/server
-        (let [v' (DOMInputController. "change" checked (e/client (partial -node-checked! dom/node)))] ; fix color
+        (let [v' (DOMInputController. "change" checked-server identity (e/client (partial -node-checked! dom/node)))] ; fix color
           (e/client
-            (let [[status v'] state-client]
+            (let [[status _] sync]
               (dom/style {:outline (str "2px solid " (progress-color status))})))
           v')))))
 
+(e/defn Input [v-server]
+  (e/client
+    (dom/input
+      (e/server
+        (let [v' (DOMInputController. "input" v-server identity (e/client (partial -node-value! dom/node)))] ; fix color
+          (e/client
+            (let [[status _] sync]
+              (dom/style {:outline (str "2px solid " (progress-color status))})))
+          v')))))
+
+(e/defn InputSubmit [v-server #_ body]
+  (e/client
+    (dom/input
+      (e/server
+        (let [v' (DOMInputController. "input" v-server (partial ui4/?read-line! dom/node)
+                   (e/client (partial -node-value! dom/node)))] ; fix color
+          (e/client
+            (let [[status _] sync]
+              (dom/style {:outline (str "2px solid " (progress-color status))})))
+          v')))))
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 

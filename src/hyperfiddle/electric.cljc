@@ -171,11 +171,11 @@ executors are allowed (i.e. to control max concurrency, timeouts etc). Currently
 
 #?(:cljs (cc/defn listen>
            ([node event-type] (listen> node event-type identity {}))
-           ([node event-type keep-fn!] (listen> node event-type keep-fn! {}))
-           ([node event-type keep-fn! opts]
+           ([node event-type keep-fn] (listen> node event-type keep-fn {}))
+           ([node event-type keep-fn opts]
             (m/relieve {}
               (m/observe (cc/fn [!]
-                           (dom-listener node event-type #(when-some [v (keep-fn! %)]
+                           (dom-listener node event-type #(when-some [v (keep-fn %)]
                                                             (! v)) opts)))))))
 
 #?(:cljs (def <dom-visibility-state 

@@ -95,29 +95,37 @@
       ; who transacts these fields and monitors progress?
       ; They auto-save, use hf/branch to add commit/discard semantics.
       ; "Save" here can mean transact, or really "sync to server so data is safe and not lost"
-      
+
       (e/server
         (hf/into-tx ; can the tx-monoid be made implicit via side channel?
           ; ui5/fForm - bind the db/id in scope? and branch here for atomicity?
           ; v-request-server
           (ui5/Field.
             :record ?record ; should be lazy loaded - entity api. This is over-fetched
-            :a 
+            :a :task/status
             :Control ui5/Checkbox
-            :parse #(case % :done true, :active false)
-            :unparse #(case % true :done, false :active)
+            :parse {:done true, :active false}
+            :unparse {true :done, false :active}
             :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
-          
+
           (ui5/Field.
             :record ?record
             :a :task/description
             :Control ui5/Input
-            :parse .
-            :unparse .
+            :parse identity
+            :unparse identity
             :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}])))))))
 
 (e/defn TodoItemCreate [submit!] ; submit is the stage commit? this is a branch?
-  ; no checkbox here
+  (ui5/Field.
+    :record .
+    :a :task/description
+    :Control ui5/InputSubmit ; how can Submit be wired directly to staging area in DT?
+    :parse identity
+    :unparse identity
+    :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}])
+    (dom/props {:placeholder "Buy milk"}))
+  
   (ui5/input "" ; esc to revert. This input has no colors actually due to being a glorified popover submit button?
     ; its a colored input but perhaps we suppress the styles as the popover is inlined?
     (dom/props {:placeholder "Buy milk"})
@@ -146,11 +154,11 @@
     (let [_ (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
                         (e/fn []
                           (e/server
-                            (Body. nil (fn submit! [local-record] ; todo: commit/discard wired up to the widget events
-                                         (->> local-record
-                                           (merge {:db/id (contrib.identity/genesis-tempid! db)})
+                            (Body. (fn submit! [local-record] ; todo: commit/discard wired up to the widget events
+                                     (->> local-record
+                                       (merge {:db/id (contrib.identity/genesis-tempid! db)})
                                            ; commit and close the popover
-                                           (as-> x (swap! !local-index assoc (kf x) x)))))))))] ; discrete
+                                       (as-> x (swap! !local-index assoc (kf x) x)))))))))] ; discrete
       local-index))) ; return also the local records, for use in optimistic queries
 
 (defn merge-unordered [kf local-records ?records]

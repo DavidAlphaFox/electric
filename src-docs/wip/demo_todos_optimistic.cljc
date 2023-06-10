@@ -2,6 +2,7 @@
   (:import [hyperfiddle.electric Pending])
   (:require [contrib.identity :refer [tempid?]]
             #?(:clj [datomic.api :as d]) ; database on server
+            [hyperfiddle.api :as hf]
             [hyperfiddle.electric :as e]
             [hyperfiddle.electric-dom2 :as dom]
             [missionary.core :as m]
@@ -47,34 +48,6 @@
                               (recur))))
                    :cljs nil))
 
-;; user configurable latency and tx fail rate
-#?(:clj (def !latency (atom 200)))
-(e/def latency (e/server (e/watch !latency)))
-
-#?(:clj (def !fail-rate (atom 1)))
-(e/def fail-rate (e/server (e/watch !fail-rate)))
-
-#?(:clj (defn tx! "tx with configured latency and fail rate" [tx]
-          (m/sp
-            (m/? (m/sleep @!latency))
-            (if (< (rand-int 10) @!fail-rate)
-              (throw (ex-info "tx failed" {:tx tx}))
-              @(d/transact !conn (dbg/dbg :tx tx))))))
-
-(e/def Tx!)
-
-(e/defn Latency [min max]
-  (dom/span (dom/style {:display "inline-flex", :flex-direction "column"})
-    (dom/span (dom/text "Latency: " latency "ms"))
-    (ui/range latency (e/fn [v] (e/server (reset! !latency v)))
-      (dom/props {:min min, :max max, :style {:width "200px"}}))))
-
-(e/defn FailRate [min max]
-  (dom/span (dom/style {:display "inline-flex", :flex-direction "column"})
-    (dom/span (dom/text "Fail Rate: " fail-rate " out of " max))
-    (ui/range fail-rate (e/fn [v] (e/server (reset! !fail-rate v)))
-      (dom/props {:min min, :max max, :style {:width "200px"}}))))
-
 #?(:clj (defn todo-count [db] (count (d/q '[:find [?e ...] :where [?e :task/status :active]] db))))
 
 #?(:clj (defn todo-records [db]
@@ -95,45 +68,49 @@
       ; who transacts these fields and monitors progress?
       ; They auto-save, use hf/branch to add commit/discard semantics.
       ; "Save" here can mean transact, or really "sync to server so data is safe and not lost"
-
       (e/server
-        (hf/into-tx ; can the tx-monoid be made implicit via side channel?
-          ; ui5/fForm - bind the db/id in scope? and branch here for atomicity?
-          ; v-request-server
-          (ui5/Field.
-            :record ?record ; should be lazy loaded - entity api. This is over-fetched
-            :a :task/status
-            :Control ui5/Checkbox
-            :parse {:done true, :active false}
-            :unparse {true :done, false :active}
-            :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
+        (hf/Transact!. ; commit now, no reason to delay.
+          
+          ; What about create-new? need a closed circuit to ensure that
+          #_(if (tempid? id) (hf/Transact!. ?record)) ; unifies with regular case
 
-          (ui5/Field.
-            :record ?record
-            :a :task/description
-            :Control ui5/Input
-            :parse identity
-            :unparse identity
-            :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}])))))))
+          (hf/into-tx ; can the tx-monoid be made implicit via side channel?
+            (ui5/Field. ; returns nil or
+              :record ?record ; should be lazy loaded - entity api. This is over-fetched. Thereby ensure right here?
+              :a :task/status
+              :Control ui5/Checkbox
+              :parse {:done true, :active false}
+              :unparse {true :done, false :active}
+              :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
 
-(e/defn TodoItemCreate [submit!] ; submit is the stage commit? this is a branch?
+            (ui5/Field.
+              :record ?record
+              :a :task/description
+              :Control ui5/Input
+              :parse identity
+              :unparse identity
+              :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))))))
+
+(e/defn TodoItemCreate []
+  ; its a colored input but perhaps we suppress the styles as the popover is inlined?
+  ; This input has no colors actually due to being a glorified popover submit button?
+  
+  ;(hf/Transact!. ...) -- do NOT transact, no ID and also it's not our job!
+  
+  ; just a regular input but to a branch.
+  ; layer in the submit event and connect it to commit-branch
+  
   (ui5/Field.
     :record .
     :a :task/description
-    :Control ui5/InputSubmit ; how can Submit be wired directly to staging area in DT?
+    :Control ui5/Input #_ui5/InputSubmit ; how can Submit be wired directly to commit-stage in DT?
+    ; todo esc to revert
     :parse identity
     :unparse identity
-    :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}])
-    (dom/props {:placeholder "Buy milk"}))
-  
-  (ui5/input "" ; esc to revert. This input has no colors actually due to being a glorified popover submit button?
-    ; its a colored input but perhaps we suppress the styles as the popover is inlined?
-    (dom/props {:placeholder "Buy milk"})
-    (when-some [v (ui5/On-input-submit. dom/node)] ; discrete, wire this to staging area submit.
-      (submit! {:task/description b
-                :task/status :active
-                #_#_:task/order (e/server (swap! !order-id inc))}))
-    nil))
+    :txn (fn [v] [{:task/description v
+                   :task/status :active
+                   #_#_:task/order (e/server (swap! !order-id inc))}])
+    (dom/props {:placeholder "Buy milk"})))
 
 ; Do all controls have submit? No, all controls emit value signals.
 ; Staging area controls submit.
@@ -141,7 +118,7 @@
 
 (e/defn CreateController
   "maintains a local index of created entities by watching the Datomic tx-report"
-  [kf Body]
+  [kf Body #_&args]
   (let [!local-index (atom {}), local-index (e/watch !local-index) ; perhaps global to the client, is it a datascript db?
         local-tempids (vals local-index)
         promoted-tempids (vals (:ids->tempids >tx-report)) ; includes those from other sessions
@@ -154,12 +131,18 @@
     (let [_ (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
                         (e/fn []
                           (e/server
-                            (Body. (fn submit! [local-record] ; todo: commit/discard wired up to the widget events
-                                     (->> local-record
-                                       (merge {:db/id (contrib.identity/genesis-tempid! db)})
-                                           ; commit and close the popover
-                                       (as-> x (swap! !local-index assoc (kf x) x)))))))))] ; discrete
-      local-index))) ; return also the local records, for use in optimistic queries
+                            (when-some [local-record (Body.)] ; todo discrete
+                              
+                              ; continuous record value connected to branch
+                              ; commit branch on popover close
+                              
+                              (->> local-record
+                                (merge {:db/id (contrib.identity/genesis-tempid! hf/db)})
+                                ; commit and close the popover
+                                ; todo: commit/discard wired up to the widget events
+                                (as-> x (swap! !local-index assoc (kf x) x))))))))]
+      
+      hf/stage #_local-index))) ; return also the local records, for use in optimistic queries
 
 (defn merge-unordered [kf local-records ?records]
   (vals (reduce (fn [acc x] (assoc acc (kf x) x))
@@ -173,7 +156,9 @@ order to stabilize identity"
   (e/client 
     (let [!ids (atom {}) ; #tempid and/or reified id -> process-unique identity
           stable-kf (partial contrib.identity/entity-id-locally-stabilzied! !ids tx-report) ; todo
-          local-index (CreateController. stable-kf TodoItemCreate {:task/status :active})
+          local-index (CreateController. stable-kf TodoItemCreate #_{:task/status :active})
+          
+          ; the local-index is the branch
 
           ; does this operate on records or entity ids?
           ; note, datomic entity api is has broken equality anyway
@@ -194,22 +179,66 @@ order to stabilize identity"
         ; existance, ok, one will win (so long as tempids are not reused and remain valid)
                       (TodoItem. record))]
       
-      )))
+      nil)))
+
+(e/defn Page []
+  (e/client
+    (dom/h1 (dom/text "advanced todo list with optimistic render and fail/retry"))
+    (dom/p (dom/text "it's multiplayer, try two tabs"))
+    (dom/div (dom/props {:class "todo-list"})
+      #_(dom/div {:class "todo-items"})
+      (e/server 
+        (let [tx? (MasterList. (fn [] (todo-records hf/db)))]
+          ))
+      (dom/p (dom/props {:class "counter"})
+        (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))
+        (dom/text " items left")))))
+
+;; user configurable latency and tx fail rate
+#?(:clj (def !latency (atom 200)))
+(e/def latency (e/server (e/watch !latency)))
+
+#?(:clj (def !fail-rate (atom 1)))
+(e/def fail-rate (e/server (e/watch !fail-rate)))
+
+(e/defn Latency [min max]
+  (dom/span (dom/style {:display "inline-flex", :flex-direction "column"})
+    (dom/span (dom/text "Latency: " latency "ms"))
+    (ui/range latency (e/fn [v] (e/server (reset! !latency v)))
+      (dom/props {:min min, :max max, :style {:width "200px"}}))))
+
+(e/defn FailRate [min max]
+  (dom/span (dom/style {:display "inline-flex", :flex-direction "column"})
+    (dom/span (dom/text "Fail Rate: " fail-rate " out of " max))
+    (ui/range fail-rate (e/fn [v] (e/server (reset! !fail-rate v)))
+      (dom/props {:min min, :max max, :style {:width "200px"}}))))
+
+#?(:clj (defn transact! "tx with configured latency and fail rate" [db tx]
+          (m/sp
+            (m/? (m/sleep @!latency))
+            (if (< (rand-int 10) @!fail-rate)
+              (throw (ex-info "tx failed" {:tx tx}))
+              (d/with db (dbg/dbg :tx tx))
+              #_@(d/transact !conn (dbg/dbg :tx tx))))))
 
 (e/defn AdvancedTodoList []
   (e/server
-    (binding [db (e/watch !db)
-              tx-report ...
-              Tx! (e/fn [tx] (new (e/task->cp (tx! tx))) nil)]
-      ;; (d/transact !conn schema)
+    (binding [hf/db (e/watch !db)
+              hf/into-tx' hf/into-tx
+              hf/with (fn [db tx] ; inject datomic dependency 
+                        (try
+                          (let [{:keys [db-after tx-report]} (new (e/task->cp (transact! db tx)))]
+                            db-after)
+                          (catch Exception e 
+                            (println "...failure, e: " e)
+                            db)))
+              tx-report ...]
       (e/client
-        (dom/h1 (dom/text "advanced todo list with optimistic render and fail/retry"))
-        (dom/p (dom/text "it's multiplayer, try two tabs"))
-        (Latency. 0 2000)
-        (FailRate. 0 10)
-        (dom/div (dom/props {:class "todo-list"})
-          ;(dom/div {:class "todo-items"})
-          (MasterList. (fn [] (todo-records db)))
-          (dom/p (dom/props {:class "counter"})
-            (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count db))))
-            (dom/text " items left")))))))
+        (Latency. 300 2000)
+        (FailRate. 3 10))
+      (hf/branch
+        (Page.)
+        (e/client
+          (dom/hr)
+          (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
+          (ui/edn (e/server hf/stage) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)})))))))

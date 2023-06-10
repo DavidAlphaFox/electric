@@ -108,7 +108,8 @@
                 hyperfiddle.api/Transact! (e/fn [tx]
                                             #_(println "Transact! " (hash !t) "committing: " tx)
                                             (let [r (Transact!*. !t tx)]
-                                              #_(println "Transact! " (hash !t) "commit result: " r)))
+                                              #_(println "Transact! " (hash !t) "commit result: " r)
+                                              r)) ; breaking: pass through
                 hyperfiddle.api/ClearStage! (e/fn [] (reset! !t [parent-db []]) nil)]
         (e/client
           (e/with-cycle [loading false]

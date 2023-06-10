@@ -156,22 +156,22 @@ avoid unintentional transfer which damages the optimistic"
   (e/client
     (dom/input
       (e/server
-        (let [v' (DOMInputController. "input" v-server identity (e/client (partial -node-value! dom/node)))] ; fix color
+        (let [?v' (DOMInputController. "input" v-server identity (e/client (partial -node-value! dom/node)))] ; fix color
           (e/client
             (let [[status _] sync]
               (dom/style {:outline (str "2px solid " (progress-color status))})))
-          v')))))
+          ?v')))))
 
 (e/defn InputSubmit [v-server #_ body]
   (e/client
     (dom/input
       (e/server
-        (let [v' (DOMInputController. "input" v-server (partial ui4/?read-line! dom/node)
+        (let [?v' (DOMInputController. "input" v-server (partial ui4/?read-line! dom/node)
                    (e/client (partial -node-value! dom/node)))] ; fix color
           (e/client
             (let [[status _] sync]
               (dom/style {:outline (str "2px solid " (progress-color status))})))
-          v')))))
+          ?v')))))
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 

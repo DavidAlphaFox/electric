@@ -79,7 +79,8 @@
 ; optimistic queries, create-new
 
 (e/defn Field
-  "[server bias] orchestration helper for declarative config"
+  "[server bias] orchestration helper for declarative config. Optimistic local
+updates are returned by side channel, see `Control`."
   [{:keys [record a Control parse unparse txn]}]
   ; domain -> control transformation -- parse, unparse -- :done to true
   ; control -> physical/DOM transformation -- getter, setter -- target-checked to true, true to target-checked
@@ -123,14 +124,21 @@ avoid unintentional transfer which damages the optimistic"
   [node event-type v-server keep-fn ref!]
   (e/client
     ;(e/fn [ref!]) ; no e/fn transfer
-    (when-some [e (e/listen> node event-type keep-fn)] ; CT event signal is mostly nil
-      (let [v'-local (parse (ref! (.-target e)))
-            [status _] (SyncController. v'-local)]
+    (or
+      (when-some [e (e/listen> node event-type keep-fn)] ; CT event signal starts nil
+      ; should it start Pending like a task? instead of nil? 
+      ; No, bad idea. The control's signal is always defined. it should use the v-server in this case
+        (let [v'-local (parse (ref! (.-target e)))
+              [status _] (SyncController. v'-local)]
         ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
-        (when-some [v-server (when (and (not (dom/Focused?. dom/node)) ; prefer local when focused
-                                     (#{::e/init ::e/ok} status)) ; keep local until safe
-                               v-server)] ; overwrite local value with newer server value
-          (ref! v-server))))))
+          (when-some [v-server (when (and (not (dom/Focused?. dom/node)) ; prefer local when focused
+                                       (#{::e/init ::e/ok} status)) ; keep local until safe
+                                 v-server)] ; overwrite local value with newer server value
+            (ref! v-server))))
+      
+      v'-local
+      v-server))) ; initial value
+; return value may or may not be changed, circuit is always live
 
 #?(:cljs (defn -target-value [^js e] (.-target.value e))) ; workaround inference warnings
 #?(:cljs (defn -node-value!
@@ -146,32 +154,33 @@ avoid unintentional transfer which damages the optimistic"
   (e/client
     (dom/input (dom/props {:type "checkbox"})
       (e/server
-        (let [v' (DOMInputController. "change" checked-server identity (e/client (partial -node-checked! dom/node)))] ; fix color
+        (let [v (DOMInputController. "change" checked-server identity (e/client (partial -node-checked! dom/node)))] ; fix color
           (e/client
-            (let [[status _] sync]
+            (let [[status _] sync] ; most recent status is latched, where? e/listen>
               (dom/style {:outline (str "2px solid " (progress-color status))})))
-          v')))))
+          v)))))
 
 (e/defn Input [v-server]
   (e/client
     (dom/input
       (e/server
-        (let [?v' (DOMInputController. "input" v-server identity (e/client (partial -node-value! dom/node)))] ; fix color
+        (let [v (DOMInputController. "input" v-server identity (e/client (partial -node-value! dom/node)))] ; fix color
           (e/client
             (let [[status _] sync]
               (dom/style {:outline (str "2px solid " (progress-color status))})))
-          ?v')))))
+          v)))))
 
+#_
 (e/defn InputSubmit [v-server #_ body]
   (e/client
     (dom/input
       (e/server
-        (let [?v' (DOMInputController. "input" v-server (partial ui4/?read-line! dom/node)
-                   (e/client (partial -node-value! dom/node)))] ; fix color
+        (let [v (DOMInputController. "input" v-server (partial ui4/?read-line! dom/node)
+                  (e/client (partial -node-value! dom/node)))] ; fix color
           (e/client
             (let [[status _] sync]
               (dom/style {:outline (str "2px solid " (progress-color status))})))
-          ?v')))))
+          v)))))
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 

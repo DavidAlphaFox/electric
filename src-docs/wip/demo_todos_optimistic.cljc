@@ -69,27 +69,35 @@
       ; They auto-save, use hf/branch to add commit/discard semantics.
       ; "Save" here can mean transact, or really "sync to server so data is safe and not lost"
       (e/server
-        (hf/Transact!. ; commit now, no reason to delay.
-          
           ; What about create-new? need a closed circuit to ensure that
-          #_(if (tempid? id) (hf/Transact!. ?record)) ; unifies with regular case
+        ;(if (tempid? id) (hf/Transact!. ?record))) ; unifies with regular case
+        
+        ;(hf/into-tx) ; can the tx-monoid be made implicit via side channel?
+        
+        ; strategy = commit asap, no reason to delay.
+        ; this means create-new records are imediately synced, which is correct
+        ; this means edits are isolated, which is correct
+        ; if edits should be batched, that's what hf/branch provides, so this is correct.
+        
+        (hf/Transact!.
+          (ui5/Field. ; returns nil or
+            :record ?record ; should be lazy loaded - entity api. This is over-fetched. Thereby ensure right here?
+            :a :task/status
+            :Control ui5/Checkbox
+            :parse {:done true, :active false}
+            :unparse {true :done, false :active}
+            :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}])))
 
-          (hf/into-tx ; can the tx-monoid be made implicit via side channel?
-            (ui5/Field. ; returns nil or
-              :record ?record ; should be lazy loaded - entity api. This is over-fetched. Thereby ensure right here?
-              :a :task/status
-              :Control ui5/Checkbox
-              :parse {:done true, :active false}
-              :unparse {true :done, false :active}
-              :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
-
-            (ui5/Field.
-              :record ?record
-              :a :task/description
-              :Control ui5/Input
-              :parse identity
-              :unparse identity
-              :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))))))
+        (hf/Transact!.
+          (ui5/Field.
+            :record ?record
+            :a :task/description
+            :Control ui5/Input
+            :parse identity
+            :unparse identity
+            :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}])))
+        )
+      )
 
 (e/defn TodoItemCreate []
   ; its a colored input but perhaps we suppress the styles as the popover is inlined?
@@ -97,20 +105,34 @@
   
   ;(hf/Transact!. ...) -- do NOT transact, no ID and also it's not our job!
   
-  ; just a regular input but to a branch.
+  ; just a regular input but writes/connects to a branch.
   ; layer in the submit event and connect it to commit-branch
   
-  (ui5/Field.
-    :record .
-    :a :task/description
-    :Control ui5/Input #_ui5/InputSubmit ; how can Submit be wired directly to commit-stage in DT?
-    ; todo esc to revert
-    :parse identity
-    :unparse identity
-    :txn (fn [v] [{:task/description v
-                   :task/status :active
-                   #_#_:task/order (e/server (swap! !order-id inc))}])
-    (dom/props {:placeholder "Buy milk"})))
+  (e/server
+    (hf/Transact!. ; write to branch, parent must have branched ; but what about the ID? We don't have one!
+      ; therefore this transact fn must be aware of the :txn vs :optimistic structure below
+      (ui5/Field. ; local optimistic updates via side channel on ckient
+        :record {}
+        :a :task/description
+        :Control ui5/Input #_ui5/InputSubmit ; todo esc to revert
+; how can Submit be wired directly to commit-stage in DT? 
+        :parse identity
+        :unparse identity
+        :txn (fn [v]
+               {#_#_:txn [[:db/add ?x :task/description v] ; no ID yet! Cannot transact, have local view repr only
+                          [:db/add ?x :task/status :active]
+                          [:db/add ?x :task/order (e/server (swap! !order-id inc))]]
+                :optimistic {:task/description v
+                             :task/status :active
+                             :task/order (e/server (swap! !order-id inc))}})
+        (dom/props {:placeholder "Buy milk"}))))
+  
+  ; todo return both :txn and :optimitic, & sync state (contains :optimistic)
+  ; does it also return the view document once stabilized (i.e. optimistic and server views converge?)
+  ; is "view-document" the local-index?
+  (e/client
+    (let [[status _] sync] ; this is the stage?
+      sync)))  ; return optimistic client value as local-index for the masterlist
 
 ; Do all controls have submit? No, all controls emit value signals.
 ; Staging area controls submit.
@@ -127,22 +149,31 @@
     (when (seq local-promotions) ; these genesis records have been promoted 
       ; and now appear in the masterlist query, so stop tracking them locally.
       (swap! !local-index #(apply dissoc % local-promotions))) ; "birth"
-
-    (let [_ (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
-                        (e/fn []
-                          (e/server
-                            (when-some [local-record (Body.)] ; todo discrete
-                              
+    
+    ; Popover is nil when closed, otherwise is 
+    ; When reopen, the optimistic view record needs to be passed back in to reattach?
+    ; No, in create-new you'll get a brand new record. That record is gone now, it's in the masterlist
+    ; if it fails to send, you can retry, but if it's disallowed entirely you can only abort.
+    
+    (let [{:keys [optimistic]} ; blinks on popover close, this is the hf/stage from inside the branch
+          (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
+                      (e/fn []
+                        (e/server
+                          (let [{:keys [txn optimistic]} (Body.)]
                               ; continuous record value connected to branch
                               ; commit branch on popover close
-                              
-                              (->> local-record
+                            (doto {:optimistic (merge optimistic {:db/id (contrib.identity/genesis-tempid! hf/db)})}
+                              (hf/Transact!.)) ; add to branch with swap! - that's bad for signals right? use into-tx here
+                              ; that way if the popover reopens, we can undo this genesis
+                            
+                            #_(->> local-record
                                 (merge {:db/id (contrib.identity/genesis-tempid! hf/db)})
                                 ; commit and close the popover
                                 ; todo: commit/discard wired up to the widget events
                                 (as-> x (swap! !local-index assoc (kf x) x))))))))]
-      
-      hf/stage #_local-index))) ; return also the local records, for use in optimistic queries
+      (swap! !local-index assoc (kf optimistic) optimistic) ; blinks?
+      ; note we ignore hf/stage, it was damaged by swap!
+      #_hf/stage local-index))) ; return also the local records, for use in optimistic queries
 
 (defn merge-unordered [kf local-records ?records]
   (vals (reduce (fn [acc x] (assoc acc (kf x) x))
@@ -159,7 +190,7 @@ order to stabilize identity"
           local-index (CreateController. stable-kf TodoItemCreate #_{:task/status :active})
           
           ; the local-index is the branch
-
+          
           ; does this operate on records or entity ids?
           ; note, datomic entity api is has broken equality anyway
           records (merge-unordered stable-kf
@@ -179,7 +210,8 @@ order to stabilize identity"
         ; existance, ok, one will win (so long as tempids are not reused and remain valid)
                       (TodoItem. record))]
       
-      nil)))
+      ; has both txn and :optimistic, for comparison
+      edit-txns))) ; use this to complete circuit, hf/stage has been damaged by swap!
 
 (e/defn Page []
   (e/client
@@ -188,8 +220,8 @@ order to stabilize identity"
     (dom/div (dom/props {:class "todo-list"})
       #_(dom/div {:class "todo-items"})
       (e/server 
-        (let [tx? (MasterList. (fn [] (todo-records hf/db)))]
-          ))
+        (let [tx (MasterList. (fn [] (todo-records hf/db)))]
+          tx))
       (dom/p (dom/props {:class "counter"})
         (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))
         (dom/text " items left")))))
@@ -231,14 +263,24 @@ order to stabilize identity"
                             db-after)
                           (catch Exception e 
                             (println "...failure, e: " e)
-                            db)))
-              tx-report ...]
+                            db)))]
       (e/client
         (Latency. 300 2000)
         (FailRate. 3 10))
-      (hf/branch
-        (Page.)
+      (let [undamaged-tx
+            (hf/branch
+              [(Page.) ; undamaged tx (responsive)
+               hf/stage] ; for comparison (damaged by swap!)
+              #_(e/client
+                  (dom/hr)
+                  (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
+                  (ui/edn (e/server hf/stage) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))))]
+        
         (e/client
           (dom/hr)
           (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
-          (ui/edn (e/server hf/stage) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)})))))))
+          ; optimistic 
+          (ui/edn (e/server undamaged-tx) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))
+          (ui/edn (e/server hf/stage) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)})))
+        
+        ))))

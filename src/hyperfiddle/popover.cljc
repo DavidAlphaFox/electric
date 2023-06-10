@@ -20,9 +20,10 @@
       (e/client
         (dom/hr)
         (let [return (m/dfv)]
-          (ui/button (e/fn [] (e/server (hf/Transact!. stage)) (return :commit)) (dom/text "commit!"))
-          (ui/button (e/fn []
-                       (return :discard)) (dom/text "discard"))
+          (ui/button (e/fn [] (e/server (hf/Transact!. stage)) 
+                       (return stage)) (dom/text "commit!"))
+          (ui/button (e/fn [] 
+                       (return [])) (dom/text "discard"))
           (ui/edn stage nil (dom/props {::dom/disabled true
                                         ::dom/style {:display "block" :width "100%" :height "3rem"}}))
           (new (e/task->cp return)))))))
@@ -41,7 +42,9 @@
   (let [!open? (atom false), open? (e/watch !open?)]
     (dom/div (dom/props {:class "hyperfiddle popover-wrapper"})
       (ui/button (e/fn [] (swap! !open? not)) (dom/text label)) ; popover anchor
-      (when open? (case (PopoverBody. Body) (swap! !open? not))))))
+      (when open?
+        (doto (PopoverBody. Body) ; nil -> X (blink), when 'commit' is clicked. Latch it? is that hf/stage?
+          (case (swap! !open? not)))))))
 
 (defmacro staged [& body] `(new BranchWrap (e/fn [] ~@body)))
 (defmacro popover [label & body] `(new Popover ~label (e/fn [] ~@body)))

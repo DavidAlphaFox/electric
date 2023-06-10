@@ -173,7 +173,7 @@ executors are allowed (i.e. to control max concurrency, timeouts etc). Currently
            ([node event-type] (listen> node event-type identity {}))
            ([node event-type keep-fn] (listen> node event-type keep-fn {}))
            ([node event-type keep-fn opts]
-            (m/relieve {}
+            (m/relieve {} ; latch most recent
               (m/observe (cc/fn [!]
                            (dom-listener node event-type #(when-some [v (keep-fn %)]
                                                             (! v)) opts)))))))

@@ -122,7 +122,7 @@
                     (reset! !ret x))) ; if the body returns something, return it. (Likely not used)
                 false (catch Pending e true))))
           nil))
-      (e/watch !ret)))) ; do we need this? Popover using it currently
+      (e/watch !ret)))) ; do we need this? Popover using it currently. YES WE NEEED
 
 (defmacro branch [& body] `(new Branch (e/fn [] ~@body)))
 

@@ -38,17 +38,17 @@ updates are returned by side channel, see `Control`."
             ; otherwise, progress is monitored right here, which is the wrong place. (or is it? - yes due
             ; to stabilizing concurrent edits inside the control.)
             v'-domain (unparse v'-physical)
-            {:keys [txn optimistic] :as xdx} (txn v'-domain)]
+            {:keys [txn optimistic] :as vdv} (txn v'-domain)]
         
         (if-not txn ; in create-new case, we don't have a txn (due to no ID until popover submit)
-          xdx ; but we have the perfect optimistic record already!
+          vdv ; but we have the perfect optimistic record already!
           (let [{:keys [db tx-report]} (hf/Transact!. field-tx)] ; impacts this branch only; even needed?
-            xdx))
+            vdv))
         
         ; still send both v and dv up to top? why?
         ; because at higher levels we may concat in more txn at form level e.g. create-new-todo
         ; they will have branched in this case, causing the above to be local.
-        xdx))))
+        vdv))))
 
 #(:cljs (def ^:dynamic !v'-client #_(atom nil))) ; out of band return
 #(:clj (def ^:dynamic !v'-server #_(atom nil))) ; out of band return
@@ -127,7 +127,7 @@ updates are returned by side channel, see `Control`."
 
 (defn with-genesis [db {:keys [optimistic txn] :as xdx}]
   (let [id (contrib.identity/genesis-tempid! db)]
-    {:txn ...
+    {#_#_:txn ...
      :optimistic (merge optimistic {:db/id id})}))
 
 (e/defn CreateController
@@ -142,10 +142,12 @@ updates are returned by side channel, see `Control`."
       ; and now appear in the masterlist query, so stop tracking them locally.
       (swap! !pending-index #(apply dissoc % local-promotions))) ; "birth" - independent entity is no longer managed by the mother
     
-    (let [xdx (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
-                          ; no point in updating the popover-local dbval here, as the popover is closing.
-                          (e/fn [] (e/server (with-genesis hf/db (Body.))))))]
-      (swap! !pending-index assoc (kf (:optimistic xdx)) xdx) ; 
+    (let [vdv (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor 
+                          (e/fn Body' []
+                            ; no point in updating the popover-local dbval here, as the popover is closing.
+                            (e/server (with-genesis (e/snapshot hf/db) ; !!! todo make discrete
+                                        (Body.))))))]
+      (swap! !pending-index assoc (kf (:optimistic vdv)) vdv) ; discrete!
       pending-index))) ; the local-index is the branch
 
 (e/defn For-by-streaming [stable-kf pending-index server-records Branch]

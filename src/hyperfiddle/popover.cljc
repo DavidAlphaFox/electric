@@ -31,7 +31,7 @@
                                         ::dom/style {:display "block" :width "100%" :height "3rem"}}))
           (new (e/task->cp return)))))))
 
-(e/defn PopoverBody [Body]
+(e/defn PopoverBody [Body-client]
   (dom/div (dom/props {:class    "hyperfiddle popover-body"
                        :tabIndex "1"}) 
     (new (m/reductions {} nil
@@ -39,16 +39,16 @@
              (fn [e]
                (when (= (.-target e) (.-currentTarget e)) ; click on self
                  (.focus (.-currentTarget e)))))))
-    (BranchWrap. (e/fn [] (Body.)))))
+    (BranchWrap. (e/fn [] (BBody-client)))))
 
-(e/defn Popover [label Body]
+(e/defn Popover [label Body-client]
   (let [!open? (atom false), open? (e/watch !open?)
         return (m/dfv)]
     (dom/div (dom/props {:class "hyperfiddle popover-wrapper"})
       (ui/button (e/fn [] (swap! !open? not)) (dom/text label)) ; popover anchor
       (when open?
         (return ; latch result, this is symetrical with relieving dom events to latest-input
-          (doto (PopoverBody. Body) ; nil until commit then blinks result
+          (doto (PopoverBody. Body-client) ; nil until commit then blinks result
             (case (swap! !open? not)))))) ; close popover when not pending (is that right? it should be optimistic, never pending)
     (new (e/task->cp return))))
 

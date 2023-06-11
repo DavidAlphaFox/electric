@@ -55,4 +55,3 @@
 (defmacro staged [& body] `(new BranchWrap (e/fn [] ~@body)))
 (defmacro popover [label & body] `(new Popover ~label (e/fn [] ~@body)))
 (defmacro popover-staged [label & body] `(~'popover ~label (~'staged ~@body)))
-

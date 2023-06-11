@@ -16,6 +16,9 @@
 (e/defn BranchWrap [Body-client] ; todo colorless p/fns
   (e/server
     (let [stage (hf/branch (e/client (Body-client.))
+                  ; body-client result goes where?
+                  ; and then we return stage?
+                  ; just return body-client result directly
                   hf/stage)]
       (e/client
         (dom/hr)
@@ -39,12 +42,15 @@
     (BranchWrap. (e/fn [] (Body.)))))
 
 (e/defn Popover [label Body]
-  (let [!open? (atom false), open? (e/watch !open?)]
+  (let [!open? (atom false), open? (e/watch !open?)
+        return (m/dfv)]
     (dom/div (dom/props {:class "hyperfiddle popover-wrapper"})
       (ui/button (e/fn [] (swap! !open? not)) (dom/text label)) ; popover anchor
       (when open?
-        (doto (PopoverBody. Body) ; nil -> X (blink), when 'commit' is clicked. Latch it? is that hf/stage?
-          (case (swap! !open? not)))))))
+        (return ; latch result, this is symetrical with relieving dom events to latest-input
+          (doto (PopoverBody. Body) ; nil until commit then blinks result
+            (case (swap! !open? not)))))) ; close popover when not pending (is that right? it should be optimistic, never pending)
+    (new (e/task->cp return))))
 
 (defmacro staged [& body] `(new BranchWrap (e/fn [] ~@body)))
 (defmacro popover [label & body] `(new Popover ~label (e/fn [] ~@body)))

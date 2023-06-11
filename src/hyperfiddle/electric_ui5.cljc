@@ -125,6 +125,10 @@ updates are returned by side channel, see `Control`."
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
+(defn with-genesis [db {:keys [optimistic] :as xdx}]
+  {:optimistic (merge optimistic
+                 {:db/id (contrib.identity/genesis-tempid! db)})})
+
 (e/defn CreateController
   "maintains a local index of created entities by watching the Datomic tx-report"
   [kf Body #_&args]
@@ -136,14 +140,12 @@ updates are returned by side channel, see `Control`."
     (when (seq local-promotions) ; these genesis records have been promoted 
       ; and now appear in the masterlist query, so stop tracking them locally.
       (swap! !local-index #(apply dissoc % local-promotions))) ; "birth"
+    
+    ; on commit latches and returns the xdx, fix as it currently returns the stage
+    (let [{:keys [optimistic]} (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
+                                           ; no point in updating the popover-local dbval here, as the popover is closing.
+                                           (e/fn [] (e/server (with-genesis hf/db (Body.))))))]
 
-    (let [{:keys [optimistic]} ; blinks on popover close, this is the hf/stage from inside the branch
-          (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
-                      (e/fn []
-                        (e/server
-                          (let [{:keys [txn optimistic] :as xdx} (Body.)] ; on commit returns the stage here, todo fix
-                            ; no point in updating dbval here, popover is closing. Due to the blink!
-                            {:optimistic (merge optimistic {:db/id (contrib.identity/genesis-tempid! hf/db)})})))))]
       (swap! !local-index assoc (kf optimistic) optimistic) ; due to the blink?
       ; note we ignore hf/stage, it was damaged by swap!
       #_hf/stage local-index))) ; return also the local records, for use in optimistic queries

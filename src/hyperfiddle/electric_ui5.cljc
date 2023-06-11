@@ -165,8 +165,7 @@ updates are returned by side channel, see `Control`."
 order to stabilize identity"
   [stable-kf server-records CreateForm EditForm] ; specifically not entities due to the optimism strategy
   (e/client
-    (let [!ids (atom {}) ; #tempid and/or reified id -> process-unique identity
-          local-index (CreateController. stable-kf CreateForm)]
+    (let [local-index (CreateController. stable-kf CreateForm)]
       (e/server ; must not accidentally transfer local-index
         (For-by-streaming. stable-kf server-records (e/client local-index) ; matching pull shape
           EditForm)))))

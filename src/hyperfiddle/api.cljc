@@ -99,17 +99,15 @@
 
 (e/defn Branch [Body-server] ; todo colorless
   (e/server
-    (let [!ret (atom nil)
+    (let [return (m/dfv)
           parent-db db
-          !t (atom #_::unknown [db []])
-          [db stage] (e/watch !t)]
+          !t (atom #_::unknown [db []]) [db stage :as t] (e/watch !t)] ; BAD
       (binding [hyperfiddle.api/db db
                 hyperfiddle.api/stage stage
                 hyperfiddle.api/Transact! (e/fn [tx]
                                             #_(println "Transact! " (hash !t) "committing: " tx)
                                             (let [r (Transact!*. !t tx)]
-                                              #_(println "Transact! " (hash !t) "commit result: " r)
-                                              r)) ; breaking: pass through
+                                              #_(println "Transact! " (hash !t) "commit result: " r)))
                 hyperfiddle.api/ClearStage! (e/fn [] (reset! !t [parent-db []]) nil)]
         (e/client
           (e/with-cycle [loading false]
@@ -119,10 +117,10 @@
                 (e/server
                   (let [x (Body-server.)] ; cycle x?
                     #_(println 'Branch x)
-                    (reset! !ret x))) ; if the body returns something, return it. (Likely not used)
+                    (return x)))
                 false (catch Pending e true))))
           nil))
-      (e/watch !ret)))) ; do we need this? Popover using it currently. YES WE NEEED
+      (new (e/task->cp return)))))
 
 (defmacro branch [& body] `(new Branch (e/fn [] ~@body)))
 

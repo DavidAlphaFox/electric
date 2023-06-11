@@ -15,21 +15,16 @@
 
 (e/defn BranchWrap [Body-client] ; todo colorless p/fns
   (e/server
-    (let [stage (hf/branch (e/client (Body-client.))
-                  ; body-client result goes where?
-                  ; and then we return stage?
-                  ; just return body-client result directly
-                  hf/stage)]
+    (let [x (hf/branch
+              (e/client (Body-client.)))]
       (e/client
         (dom/hr)
         (let [return (m/dfv)]
-          (ui/button (e/fn [] (e/server (hf/Transact!. stage)) 
-                       (return stage)) (dom/text "commit!"))
-          (ui/button (e/fn [] 
-                       (return [])) (dom/text "discard"))
-          (ui/edn stage nil (dom/props {::dom/disabled true
-                                        ::dom/style {:display "block" :width "100%" :height "3rem"}}))
-          (new (e/task->cp return)))))))
+          (ui/button (e/fn [] (return x)) (dom/text "commit!"))
+          (ui/button (e/fn [] (return nil)) (dom/text "discard"))
+          (ui/edn x nil (dom/props {::dom/disabled true
+                                    ::dom/style {:display "block" :width "100%" :height "3rem"}}))
+          (new (e/task->cp return))))))) ; popovers are pending until committed
 
 (e/defn PopoverBody [Body-client]
   (dom/div (dom/props {:class    "hyperfiddle popover-body"
@@ -39,7 +34,7 @@
              (fn [e]
                (when (= (.-target e) (.-currentTarget e)) ; click on self
                  (.focus (.-currentTarget e)))))))
-    (BranchWrap. (e/fn [] (BBody-client)))))
+    (BranchWrap. (e/fn [] (Body-client)))))
 
 (e/defn Popover [label Body-client]
   (let [!open? (atom false), open? (e/watch !open?)
@@ -48,7 +43,7 @@
       (ui/button (e/fn [] (swap! !open? not)) (dom/text label)) ; popover anchor
       (when open?
         (return ; latch result, this is symetrical with relieving dom events to latest-input
-          (doto (PopoverBody. Body-client) ; nil until commit then blinks result
+          (doto (PopoverBody. Body-client) ; nil until commit then blinks result, can this be untangled to remove the blink?
             (case (swap! !open? not)))))) ; close popover when not pending (is that right? it should be optimistic, never pending)
     (new (e/task->cp return))))
 

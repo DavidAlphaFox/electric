@@ -46,6 +46,11 @@ previously seen."
               (upsert-id! !ids e e') ; unify with previously seen identity 
               (upsert-id! !ids e)))))
 
+(e/defn Entity-id-locally-stabilzied! [tx-report]
+  (let [!ids (atom {})] ; #tempid and/or reified id -> process-unique identity
+    (fn [record]
+      (entity-id-locally-stabilzied! !ids tx-report record))))
+
 (tests
   (def !ids (atom {}))
   (entity-id-locally-stabilzied! !ids db "tempid-1") := ?a

@@ -39,7 +39,7 @@
         ; this means edits are isolated, which is correct
         ; if edits should be batched, that's what hf/branch provides, so this is correct. 
         
-        (ui5/Field. ; returns nil or
+        (ui5/Field.
           :record ?record ; should be lazy loaded - entity api. This is over-fetched. Thereby ensure right here?
           :a :task/status
           :Control ui5/Checkbox
@@ -53,7 +53,7 @@
           :Control ui5/Input
           :parse identity
           :unparse identity
-          :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))
+          :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))))
 
 (e/defn TodoItemCreate "just another form, the caller will branch and deal with genesis 
 on submit"
@@ -77,10 +77,6 @@ on submit"
                            :task/order (e/server (swap! !order-id inc))}})
       (dom/props {:placeholder "Buy milk"})))
   #_(e/client v'-client) ; return optimistic client value as local-index for the masterlist
-  
-  ; todo return both :txn and :optimitic, & sync state (contains :optimistic)
-  ; does it also return the view document once stabilized (i.e. optimistic and server views converge?)
-  ; is "view-document" the local-index? 
   )
 
 (e/defn Page []
@@ -90,7 +86,7 @@ on submit"
     (dom/div (dom/props {:class "todo-list"})
       #_(dom/div {:class "todo-items"})
       (e/server 
-        (let [stable-kf (partial contrib.identity/entity-id-locally-stabilzied! !ids tx-report) ; todo
+        (let [stable-kf (contrib.identity/Entity-id-locally-stabilzied!. hf/tx-report)
               tx (MasterList. stable-kf (todo-records hf/db)
                    TodoItem TodoItemCreate #_{:task/status :active})]
           tx))
@@ -112,20 +108,13 @@ on submit"
       (e/client
         (Latency. 300 2000)
         (FailRate. 3 10))
-      (let [undamaged-tx
-            (hf/branch
-              [(Page.) ; undamaged tx (responsive)
-               hf/stage] ; for comparison (damaged by swap!)
-              #_(e/client
-                  (dom/hr)
-                  (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
-                  (ui/edn (e/server hf/stage) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))))]
-        
+      (let [vdv (hf/branch
+                  (Page.))]
+        ; vdv is on the client actually, its optimistic. dv is also concurrently on the server.
+        ; perhaps those parallel code flows should be made explicit! Can Electric compiler solve it?
         (e/client
           (dom/hr)
           (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
           ; optimistic 
-          (ui/edn (e/server undamaged-tx) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))
-          (ui/edn (e/server hf/stage) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)})))
-        
-        ))))
+          (ui/edn vdv nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))
+          #_(ui/edn (e/server .) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)})))))))

@@ -25,11 +25,11 @@
 
 (defmacro input [v V! & body]
   `(dom/input
-     (control "input" value identity ~v ~V! dom/set-val ~@body)))
+     (control "input" value identity ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro textarea [v V! & body]
   `(dom/textarea
-     (control "input" value identity ~v ~V! dom/set-val ~@body)))
+     (control "input" value identity ~v ~V! dom/-node-value! ~@body)))
 
 (defn parse-edn [s] (try (some-> s contrib.str/blank->nil clojure.edn/read-string) (catch #?(:clj Throwable :cljs :default) _)))
 (defn keep-if [pred v] (when (pred v) v))
@@ -45,7 +45,7 @@
 
 (defmacro edn [v V! & body]
   `(dom/textarea
-     (control "input" (comp parse-edn value) contrib.str/pprint-str ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-edn value) contrib.str/pprint-str ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro checkbox [v V! & body]
   `(dom/input (dom/props {:type "checkbox"})
@@ -53,32 +53,32 @@
 
 (defmacro range [v V! & body]
   `(dom/input (dom/props {:type "range"})
-     (control "input" (comp parse-long value) identity ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-long value) identity ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro double [v V! & body]
   `(dom/input (dom/props {:type "number"})
-     (control "input" (comp parse-double value) identity ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-double value) identity ~v ~V! dom/-node-value! ~@body)))
 
 (def uuid-pattern "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 (defmacro uuid [v V! & body]
   `(dom/input (dom/props {:type "text" :pattern uuid-pattern})
-     (control "input" (comp parse-uuid value) identity ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-uuid value) identity ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro keyword [v V! & body]
   `(dom/input
-     (control "input" (comp parse-keyword value) identity ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-keyword value) identity ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro symbol [v V! & body]
   `(dom/input
-     (control "input" (comp parse-symbol value) identity ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-symbol value) identity ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro date [v V! & body]
   `(dom/input (dom/props {:type "date"})
-     (control "input" (comp parse-date value) identity ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-date value) identity ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro datetime-local [v V! & body]
   `(dom/input (dom/props {:type "datetime-local"})
-     (control "input" (comp parse-datetime-local value) identity ~v ~V! dom/set-val ~@body)))
+     (control "input" (comp parse-datetime-local value) identity ~v ~V! dom/-node-value! ~@body)))
 
 (defmacro button [V! & body] ; "submit-1" vs "submit-N"
   "On click, run possibly remote effect V! and disable the button (preventing 

@@ -5,7 +5,7 @@
             [contrib.identity :refer [tempid?]]
             contrib.str
             [hyperfiddle.electric :as e]
-            [hyperfiddle.electric-dom2 :as dom]
+            [hyperfiddle.electric-dom2 :as dom :refer [-target-value -node-checked! -node-value!]]
             [hyperfiddle.electric-ui4 :as ui4]
             [missionary.core :as m]
             [contrib.debug :as dbg]
@@ -150,15 +150,6 @@ updates are returned by side channel, see `Control`."
         ;(= ::failed status) ?
         ;(= ::init status) v-server
         (= ::ok status) (do (ref! v-server) [::ok v-server]))))) ; concurrent edit, otherwise work-skipped
-
-
-#?(:cljs (defn -target-value [^js e] (.-target.value e))) ; workaround inference warnings
-#?(:cljs (defn -node-value!
-           ([node] (.-value node))
-           ([node v] (set! (.-value node) v) #_v)))
-#?(:cljs (defn -node-checked!
-           ([node] (.-checked node))
-           ([node checked] (set! (.-checked node) checked)))) ; js coerce
 
 (e/defn Checkbox
   "[server bias]"

@@ -202,10 +202,17 @@
     (m/relieve {})
     new))
 
-#?(:cljs (defn set-val [node v] (set! (.-value node) (str v))))
+
+#?(:cljs (defn -target-value [^js e] (.-target.value e))) ; workaround inference warnings
+#?(:cljs (defn -node-value!
+           ([node] (.-value node))
+           ([node v] (set! (.-value node) v) #_v))) ; js coerce
+#?(:cljs (defn -node-checked!
+           ([node] (.-checked node))
+           ([node checked] (set! (.-checked node) checked)))) ; js coerce
 
 (defmacro bind-value
-  ([v]        `(bind-value ~v set-val))
+  ([v]        `(bind-value ~v -node-value!))
   ([v setter] `(when-some [v# (when-not (new Focused?) ~v)]
                  (~setter node v#))))
 

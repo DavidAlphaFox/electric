@@ -7,7 +7,7 @@
             [hyperfiddle.electric-dom2 :as dom]
             [missionary.core :as m]
             [hyperfiddle.electric-ui4 :as ui]
-            [hyperfiddle.electric-ui5 :as ui5]
+            [hyperfiddle.electric-ui5 :as ui5 :refer [CreateController MasterList]]
             [contrib.data :refer [merge-unordered]]
             [contrib.debug :as dbg]
             [hyperfiddle.api :as hf]
@@ -82,52 +82,6 @@ on submit"
   ; does it also return the view document once stabilized (i.e. optimistic and server views converge?)
   ; is "view-document" the local-index? 
   )
-
-(e/defn CreateController
-  "maintains a local index of created entities by watching the Datomic tx-report"
-  [kf Body #_&args]
-  (let [!local-index (atom {}), local-index (e/watch !local-index) ; perhaps global to the client, is it a datascript db?
-        local-tempids (vals local-index)
-        promoted-tempids (vals (:ids->tempids >tx-report)) ; includes those from other sessions
-        local-promotions (clojure.set/intersection promoted-tempids local-tempids)]
-
-    (when (seq local-promotions) ; these genesis records have been promoted 
-      ; and now appear in the masterlist query, so stop tracking them locally.
-      (swap! !local-index #(apply dissoc % local-promotions))) ; "birth"
-
-    (let [{:keys [optimistic]} ; blinks on popover close, this is the hf/stage from inside the branch
-          (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
-                      (e/fn []
-                        (e/server
-                          (let [{:keys [txn optimistic] :as xdx} (Body.)] ; on commit returns the stage here, todo fix
-                            ; no point in updating dbval here, popover is closing. Due to the blink!
-                            {:optimistic (merge optimistic {:db/id (contrib.identity/genesis-tempid! hf/db)})})))))]
-      (swap! !local-index assoc (kf optimistic) optimistic) ; due to the blink?
-      ; note we ignore hf/stage, it was damaged by swap!
-      #_hf/stage local-index))) ; return also the local records, for use in optimistic queries
-
-(e/defn MasterList
-  "encapsulates both rendering the table and also adding elements to it, in 
-order to stabilize identity"
-  [stable-kf CreateForm EditForm query-records] ; specifically not entities due to the optimism strategy
-  (e/client 
-    (let [!ids (atom {}) ; #tempid and/or reified id -> process-unique identity
-          local-index (CreateController. stable-kf CreateForm) ; the local-index is the branch
-          
-          ; operate on records because datomic-entity api has broken equality
-          ; note, the optimistic view is also in record-shape not entity shape (though we could index that) 
-          records (merge-unordered stable-kf
-                    (vals local-index) ; must have matching pull shape
-                    (try (e/server (query-records)) ; matching pull shape
-                      (catch Pending _))) ; todo rethrow pending for load timers above
-          
-          edit-txns (e/for-by stable-kf [record records] ; must include genesised records, for stability
-                      ; What if the local-records end up in two places? That's a race, both will 
-                      ; ensure existance, one will win (so long as tempids are not reused and remain valid)
-                      (EditForm. record))] ; Ensure local entities here, they've been submitted
-      
-      ; has both txn and :optimistic, for comparison
-      edit-txns))) ; use this to complete circuit, hf/stage has been damaged by swap!
 
 (e/defn Page []
   (e/client

@@ -178,6 +178,11 @@
       [:user/email
        :db/id]])
 
+(defn merge-unordered [kf local-records ?records]
+  (vals (reduce (fn [acc x] (assoc acc (kf x) x))
+          (group-by kf local-records)
+          ?records)))
+
 (defn update-existing [m k f & args]
   (if (get m k)
     (apply update m k f args)

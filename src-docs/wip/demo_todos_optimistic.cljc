@@ -8,7 +8,7 @@
             [missionary.core :as m]
             [hyperfiddle.electric-ui4 :as ui]
             [hyperfiddle.electric-ui5 :as ui5]
-            [contrib.data]
+            [contrib.data :refer [merge-unordered]]
             [contrib.debug :as dbg]
             [hyperfiddle.api :as hf]
             [wip.demo-datomic-helpers :refer [Latency FailRate transact! db tx-report]]))
@@ -105,11 +105,6 @@ on submit"
       (swap! !local-index assoc (kf optimistic) optimistic) ; due to the blink?
       ; note we ignore hf/stage, it was damaged by swap!
       #_hf/stage local-index))) ; return also the local records, for use in optimistic queries
-
-(defn merge-unordered [kf local-records ?records]
-  (vals (reduce (fn [acc x] (assoc acc (kf x) x))
-          (group-by kf local-records)
-          ?records)))
 
 (e/defn MasterList
   "encapsulates both rendering the table and also adding elements to it, in 

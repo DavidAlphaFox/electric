@@ -91,9 +91,8 @@ on submit"
       #_(dom/div {:class "todo-items"})
       (e/server 
         (let [stable-kf (partial contrib.identity/entity-id-locally-stabilzied! !ids tx-report) ; todo
-              tx (MasterList. stable-kf
-                   TodoItemCreate #_{:task/status :active} 
-                   TodoItem (fn [] (todo-records hf/db)))]
+              tx (MasterList. stable-kf (todo-records hf/db)
+                   TodoItem TodoItemCreate #_{:task/status :active})]
           tx))
       (dom/p (dom/props {:class "counter"})
         (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))

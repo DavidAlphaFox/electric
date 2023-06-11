@@ -125,50 +125,46 @@ updates are returned by side channel, see `Control`."
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
-(defn with-genesis [db {:keys [optimistic] :as xdx}]
-  {:optimistic (merge optimistic
-                 {:db/id (contrib.identity/genesis-tempid! db)})})
+(defn with-genesis [db {:keys [optimistic txn] :as xdx}]
+  (let [id (contrib.identity/genesis-tempid! db)]
+    {:txn ...
+     :optimistic (merge optimistic {:db/id id})}))
 
 (e/defn CreateController
   "maintains a local index of created entities by watching the Datomic tx-report"
   [kf Body #_&args]
-  (let [!local-index (atom {}), local-index (e/watch !local-index) ; perhaps global to the client, is it a datascript db?
-        local-tempids (vals local-index)
+  (let [!pending-index (atom {}), pending-index (e/watch !pending-index) ; perhaps global to the client, is it a datascript db?
+        local-tempids (vals pending-index)
         promoted-tempids (vals (:ids->tempids >tx-report)) ; includes those from other sessions
         local-promotions (clojure.set/intersection promoted-tempids local-tempids)]
 
-    (when (seq local-promotions) ; these genesis records have been promoted 
+    (when (seq local-promotions) ; these genesis records have now been promoted
       ; and now appear in the masterlist query, so stop tracking them locally.
-      (swap! !local-index #(apply dissoc % local-promotions))) ; "birth"
+      (swap! !pending-index #(apply dissoc % local-promotions))) ; "birth" - independent entity is no longer managed by the mother
     
-    ; on commit latches and returns the xdx, fix as it currently returns the stage
-    (let [{:keys [optimistic]} (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
-                                           ; no point in updating the popover-local dbval here, as the popover is closing.
-                                           (e/fn [] (e/server (with-genesis hf/db (Body.))))))]
+    (let [xdx (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
+                          ; no point in updating the popover-local dbval here, as the popover is closing.
+                          (e/fn [] (e/server (with-genesis hf/db (Body.))))))]
+      (swap! !pending-index assoc (kf (:optimistic xdx)) xdx) ; 
+      pending-index))) ; the local-index is the branch
 
-      (swap! !local-index assoc (kf optimistic) optimistic) ; due to the blink?
-      ; note we ignore hf/stage, it was damaged by swap!
-      #_hf/stage local-index))) ; return also the local records, for use in optimistic queries
+(e/defn For-by-streaming [stable-kf pending-index server-records Branch]
+  (e/client
+    ; operate on records because datomic-entity api has broken equality
+    ; note, the optimistic view is also in record-shape not entity shape (though we could index that)
+    (let [records (merge-unordered stable-kf ; todo rethrow pending for load timers above
+                    (-> (vals pending-index) (map :optimistic)) ; must have matching pull shape
+                    server-records)]
+      (e/for-by kf [record records] ; must include genesised records, for stability
+        (Branch. record))))) ; Ensure local entities here, they've been submitted
 
 (e/defn MasterList
   "encapsulates both rendering the table and also adding elements to it, in 
 order to stabilize identity"
-  [stable-kf CreateForm EditForm query-records] ; specifically not entities due to the optimism strategy
+  [stable-kf server-records CreateForm EditForm] ; specifically not entities due to the optimism strategy
   (e/client
     (let [!ids (atom {}) ; #tempid and/or reified id -> process-unique identity
-          local-index (CreateController. stable-kf CreateForm) ; the local-index is the branch
-
-          ; operate on records because datomic-entity api has broken equality
-          ; note, the optimistic view is also in record-shape not entity shape (though we could index that) 
-          records (merge-unordered stable-kf
-                    (vals local-index) ; must have matching pull shape
-                    (try (e/server (query-records)) ; matching pull shape
-                      (catch Pending _))) ; todo rethrow pending for load timers above
-
-          edit-txns (e/for-by stable-kf [record records] ; must include genesised records, for stability
-                      ; What if the local-records end up in two places? That's a race, both will 
-                      ; ensure existance, one will win (so long as tempids are not reused and remain valid)
-                      (EditForm. record))] ; Ensure local entities here, they've been submitted
-
-      ; has both txn and :optimistic, for comparison
-      edit-txns))) ; use this to complete circuit, hf/stage has been damaged by swap!
+          local-index (CreateController. stable-kf CreateForm)]
+      (e/server ; must not accidentally transfer local-index
+        (For-by-streaming. stable-kf server-records (e/client local-index) ; matching pull shape
+          EditForm)))))

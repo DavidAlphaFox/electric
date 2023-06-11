@@ -21,63 +21,8 @@
          (m/observe (fn [!] (e/dom-listener node "keydown"
                               #(some-> (ui4/?read-line! node %) !)))))))
 
-#_#_#_
-(e/defn ReadEntity [{:keys [db/id] :as record}]
-  ; we should ask the process-local store for any optimistic updates for this record
-  (try
-    (e/server [::e/init record ; assumes pull API was already used, todo use entity api below
-               #_(d/entity db e)])
-    #_(catch Pending _ [::e/pending record]) ; never happens
-    (catch :default e [::e/failed e])))
-
-(e/defn CreateEntity [{:keys [db/id] :as record}]
-  (try ; create is never ::e/init -- what is this?
-    (case (d/transact !conn [record]) ; todo ensure, not raw transact, don't fail if someone else beat us
-      ; (when-not (d/entity db id)))
-      #_[::e/ok (into {} (d/touch (d/entity db (ids->tempids id))))])  ; no need to query, a branch above switches
-    (catch Pending _ [::e/pending record]) ; optimistic
-    (catch :default e [::e/failed e])))
-
-(e/defn EnsureEntity [{:keys [db/id] :as record}] ; optimistic record, pre-pulled
-  (if-not (tempid? id)
-    (ReadEntity. record)
-    (CreateEntity. record))) ; todo must be idempotent
-
 (defn progress-color [state]
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
-
-; What is the staging area anyway?
-; Why is it tied to Datomic?
-; Under what circumstances is something a control accepted, rejected by the server?
-; -- duplicate email address
-; ... accepted and "safe", and also invalid
-
-; what is red status?
-; it failed
-; at which level did it fail?
-; did the value fail to sync over network?
-; is the value invalid in the context of the view of the field? the form?
-; did the transaction at form level fail?
-
-; What does user care about?
-;  - is my edit safe (acknowledged) - don't let me lose data
-;  - control over the submit action
-;  - is the submit safe
-;  - did the submit succeed
-
-; Do we ensure at field, form, ... each level?
-; why not?
-; once edit is ultimately accepted by a higher level, the tempid is promoted in that layer
-; thus indexing responsibility propagates upwards?
-
-; Progress is necessary at each level of interaction:
-;  - optimistic value edits   - V
-;  - txn at field level       - d/with: EAV + field-txn   
-;  - d/with at form level     - d/with: N * (EAV + field-txn) + form-txn
-;  - d/transact at top level  - final rebase
-
-; optimism
-; optimistic queries, create-new
 
 (e/defn Field
   "[server bias] orchestration helper for declarative config. Optimistic local
@@ -179,8 +124,3 @@ updates are returned by side channel, see `Control`."
         v))))
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
-
-;; (e/defn ServerInc [x]
-;;   (inc x))
-
-;; (e/server (ServerInc. 42))

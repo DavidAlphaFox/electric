@@ -12,12 +12,6 @@
             [contrib.debug :as dbg]
             [hyperfiddle.api :as hf]))
 
-;; showcases how to render an item optimistically and without e/for-event
-;; missing:
-;; - ordering
-;; - idempotent entity creation
-;; - integration of a local and remote seq in e/for-by
-
 #?(:clj
    (def schema
      [{:db/ident :task/status,      :db/valueType :db.type/keyword, :db/cardinality :db.cardinality/one}

@@ -9,7 +9,8 @@
             [hyperfiddle.electric-ui4 :as ui4]
             [missionary.core :as m]
             [contrib.debug :as dbg]
-            [hyperfiddle.client.edn-view :as ev]))
+            [hyperfiddle.client.edn-view :as ev]
+            [hyperfiddle.api :as hf]))
 
 (e/def local?)
 (def tempid? (some-fn nil? string?))
@@ -81,22 +82,31 @@
 (e/defn Field
   "[server bias] orchestration helper for declarative config. Optimistic local
 updates are returned by side channel, see `Control`."
-  [{:keys [record a Control parse unparse txn]}]
-  ; domain -> control transformation -- parse, unparse -- :done to true
-  ; control -> physical/DOM transformation -- getter, setter -- target-checked to true, true to target-checked
-  ; DomInputController must own the server io.
-  ; what if we send the physical value repr to the server
-  ; and run txn on the server? 
+  [{:keys [record ; record on server except create-new
+           a Control parse unparse txn]}]
   (e/server
-    (let [v-domain (get record a)
-          v-physical (parse v-domain)
-          v'-physical (Control. v-physical) ; optimistic, can it rollback? ; monitor progress here? 
-          v'-domain (unparse v'-physical)
-          field-tx (txn v'-domain)]
-      field-tx)))
+    (binding [!v'-server (atom nil)] ; setup side channel
+      (let [v-domain (get record a)
+            v-physical (parse v-domain)
+            _v'-physical (Control. v-physical) ; optimistic, can it rollback? ; monitor progress here? 
+            v'-physical (e/watch !v'-server) ; weird trick - the InputController owns the sync
+            ; otherwise, progress is monitored right here, which is the wrong place. (or is it? - yes due
+            ; to stabilizing concurrent edits inside the control.)
+            v'-domain (unparse v'-physical)
+            {:keys [txn optimistic] :as xdx} (txn v'-domain)]
+        
+        (if-not txn ; in create-new case, we don't have a txn (due to no ID until popover submit)
+          xdx ; but we have the perfect optimistic record already!
+          (let [{:keys [db tx-report]} (hf/Transact!. field-tx)] ; impacts this branch only; even needed?
+            xdx))
+        
+        ; still send both v and dv up to top? why?
+        ; because at higher levels we may concat in more txn at form level e.g. create-new-todo
+        ; they will have branched in this case, causing the above to be local.
+        xdx))))
 
-#(:clj (def !v'-server (atom nil))) ; out of band return
-(e/def v'-server (e/server (e/watch !v'-server))) ; todo cannot be global
+#(:cljs (def ^:dynamic !v'-client #_(atom nil))) ; out of band return
+#(:clj (def ^:dynamic !v'-server #_(atom nil))) ; out of band return
 
 ; can we use currying to fix this concern?
 #(:cljs (def !sync (atom nil))) ; out of band return
@@ -106,81 +116,76 @@ updates are returned by side channel, see `Control`."
 ;   1. status (green dot), client-side (includes optimistic value)
 ;   2. v', server-side (so that it's safe, this is what the green dot is monitoring)
 ;   3. v'-client ??? 
-(e/defn SyncController 
-  "by side channel, return both `v'-server` and `[status v'-optimistic]` in order to 
-avoid unintentional transfer which damages the optimistic"
+(e/defn SyncController
+  "locally return [status v'], + remotely return `v-server` by side channel"
   [v'-local]
   (e/client
-    (reset! !sync ; side channel
-      (try
-        [::ok (e/server (reset! v'-server v'-local) nil)] ; make it "safe" immediately, + side channel
-        (catch Pending _ [::pending v'-local]) ; optimistic, must not lag
-        (catch :default ex [::failed ex]))))) ; impossible
+    ;(reset! !sync) ; side channel
+    (try
+      ; todo don't roundtrip initial value?
+      [::ok (e/server (reset! !v'-server v'-local))] ; make it "safe" immediately, + side channel
+      ; ::ok is never actually seen, overridden in DomController2
+      (catch Pending _ [::pending v'-local]) ; optimistic, must not lag
+      (catch :default ex [::failed ex])))) ; impossible
 
-(e/defn DOMInputController
-  "[server bias, returns state-client and v'-server]"
-  ;"read and write a single control's DOM with optimistic state and rollback"
-  ; v' may not be transacted yet, even if this control is green/safe
-  [node event-type v-server keep-fn ref!]
+(comment 
+  (e/server
+    (binding [!server-v (atom .)] ; return channel
+      (e/client
+        (DDomInputController ...)))))
+
+(e/defn DomInputController
+  "[server bias] signal of what the user types as [status v']"
+  [node event-type v-server ref!] #_[server-v] ; side channel
   (e/client
-    ;(e/fn [ref!]) ; no e/fn transfer
-    (or
-      (when-some [e (e/listen> node event-type keep-fn)] ; CT event signal starts nil
-      ; should it start Pending like a task? instead of nil? 
-      ; No, bad idea. The control's signal is always defined. it should use the v-server in this case
-        (let [v'-local (parse (ref! (.-target e)))
-              [status _] (SyncController. v'-local)]
-        ; workaround "when-true" bug: extra outer when-some added to guard a nil from incorrectly sneaking through
-          (when-some [v-server (when (and (not (dom/Focused?. dom/node)) ; prefer local when focused
-                                       (#{::e/init ::e/ok} status)) ; keep local until safe
-                                 v-server)] ; overwrite local value with newer server value
-            (ref! v-server))))
-      
-      v'-local
-      v-server))) ; initial value
-; return value may or may not be changed, circuit is always live
+    (let [>v (->> (m/observe (cc/fn [!] (dom-listener node event-type ! opts))) ; user input events
+                (m/relieve {}) ; input value signal, never backpressure the user 
+                (m/eduction (map (fn event->value [e] (parse (ref! (.-target e))))))
+                (m/reductions {} [::ok v-server])) ; try to accidental round trip of initial value
+          [status v :as state] (SyncController. (new >v))] ; also returns server value in side channel
+
+      (cond
+        (dom/Focused?. node) state
+        (= ::pending status) state
+        ;(= ::failed status) ?
+        ;(= ::init status) v-server
+        (= ::ok status) (do (ref! v-server) [::ok v-server]))))) ; concurrent edit, otherwise work-skipped
+
 
 #?(:cljs (defn -target-value [^js e] (.-target.value e))) ; workaround inference warnings
 #?(:cljs (defn -node-value!
            ([node] (.-value node))
-           ([node v] (set! (.-value node) v))))
+           ([node v] (set! (.-value node) v) #_v)))
 #?(:cljs (defn -node-checked!
            ([node] (.-checked node))
            ([node checked] (set! (.-checked node) checked)))) ; js coerce
 
 (e/defn Checkbox
   "[server bias]"
-  [checked-server]
+  [checked-server] #_[*status*] ; dynamic status from Field?
   (e/client
     (dom/input (dom/props {:type "checkbox"})
-      (e/server
-        (let [v (DOMInputController. "change" checked-server identity (e/client (partial -node-checked! dom/node)))] ; fix color
-          (e/client
-            (let [[status _] sync] ; most recent status is latched, where? e/listen>
-              (dom/style {:outline (str "2px solid " (progress-color status))})))
-          v)))))
+      (let [[status v] (e/client (DOMInputController. dom/node "change" checked-server (e/client (partial -node-checked! dom/node))))]
+        (dom/style {:outline (str "2px solid " (progress-color status))})
+        (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
+        v))))
 
 (e/defn Input [v-server]
   (e/client
     (dom/input
-      (e/server
-        (let [v (DOMInputController. "input" v-server identity (e/client (partial -node-value! dom/node)))] ; fix color
-          (e/client
-            (let [[status _] sync]
-              (dom/style {:outline (str "2px solid " (progress-color status))})))
-          v)))))
+      (let [[status v] (DOMInputController. dom/node "input" v-server (e/client (partial -node-value! dom/node)))]
+        (dom/style {:outline (str "2px solid " (progress-color status))})
+        (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
+        v))))
 
 #_
 (e/defn InputSubmit [v-server #_ body]
   (e/client
     (dom/input
-      (e/server
-        (let [v (DOMInputController. "input" v-server (partial ui4/?read-line! dom/node)
-                  (e/client (partial -node-value! dom/node)))] ; fix color
-          (e/client
-            (let [[status _] sync]
-              (dom/style {:outline (str "2px solid " (progress-color status))})))
-          v)))))
+      (let [[status v] (DOMInputController. "input" v-server :keep-fn (partial ui4/?read-line! dom/node)
+                         (e/client (partial -node-value! dom/node)))]
+        (dom/style {:outline (str "2px solid " (progress-color status))})
+        v))))
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 

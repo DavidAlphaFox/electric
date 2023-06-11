@@ -10,37 +10,14 @@
             [hyperfiddle.electric-ui5 :as ui5]
             [contrib.data]
             [contrib.debug :as dbg]
-            [hyperfiddle.api :as hf]))
+            [hyperfiddle.api :as hf]
+            [wip.demo-datomic-helpers :refer [Latency FailRate transact! db tx-report]]))
 
 #?(:clj
    (def schema
      [{:db/ident :task/status,      :db/valueType :db.type/keyword, :db/cardinality :db.cardinality/one}
       {:db/ident :task/description, :db/valueType :db.type/string,  :db/cardinality :db.cardinality/one}
       {:db/ident :hf/stable-id,     :db/valueType :db.type/uuid,    :db/cardinality :db.cardinality/one, :db/unique :db.unique/identity}]))
-
-#?(:clj (defn init-conn []
-          (let [uri "datomic:mem://db"]
-            (d/delete-database uri)
-            (d/create-database uri)
-            (let [conn (d/connect uri)]
-              (d/transact conn schema)
-              conn))))
-
-(defonce !conn #?(:clj (init-conn) :cljs nil)) ; database on server
-#?(:clj (comment (alter-var-root #'!conn (fn [_] (init-conn)))))
-(e/def db) ; injected database ref; Electric defs are always dynamic
-(e/def tx-report) ; for promoted tempids
-
-(defonce !db #?(:clj (atom nil) :cljs nil))
-;; singleton database queue polling
-;; in the future this can be done with `m/signal`
-(defonce !taker #?(:clj (future
-                          (reset! !db (d/db !conn))
-                          (let [q (d/tx-report-queue !conn)]
-                            (loop []
-                              (reset! !db (:db-after (.take ^java.util.concurrent.LinkedBlockingQueue q)))
-                              (recur))))
-                   :cljs nil))
 
 #?(:clj (defn todo-count [db] (count (d/q '[:find [?e ...] :where [?e :task/status :active]] db))))
 
@@ -52,9 +29,6 @@
                                        #_:task/order]) ...]
                       :where [?e :task/status]] db)
             #_(sort-by :task/order #(compare %2 %1)))))
-
-; Typing into fields should emit txns right away (with green dots) – locally
-; the commit event is on the popover, which emits the txn up to the caller
 
 (e/defn TodoItem [{:keys [db/id] :as ?record} submit!] ; pre-pulled, todo entity api
   (e/client
@@ -85,7 +59,7 @@
 on submit"
   []
   ; its a colored input but perhaps we suppress the styles as the popover is inlined?
-  ; This input has no colors actually due to being a glorified popover submit button?  
+  ; This input has no colors actually due to being a glorified popover submit button?
   (e/server
     (ui5/Field. ; local optimistic updates via side channel on client
       :record (e/server {})
@@ -182,33 +156,6 @@ order to stabilize identity"
       (dom/p (dom/props {:class "counter"})
         (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))
         (dom/text " items left")))))
-
-;; user configurable latency and tx fail rate
-#?(:clj (def !latency (atom 200)))
-(e/def latency (e/server (e/watch !latency)))
-
-#?(:clj (def !fail-rate (atom 1)))
-(e/def fail-rate (e/server (e/watch !fail-rate)))
-
-(e/defn Latency [min max]
-  (dom/span (dom/style {:display "inline-flex", :flex-direction "column"})
-    (dom/span (dom/text "Latency: " latency "ms"))
-    (ui/range latency (e/fn [v] (e/server (reset! !latency v)))
-      (dom/props {:min min, :max max, :style {:width "200px"}}))))
-
-(e/defn FailRate [min max]
-  (dom/span (dom/style {:display "inline-flex", :flex-direction "column"})
-    (dom/span (dom/text "Fail Rate: " fail-rate " out of " max))
-    (ui/range fail-rate (e/fn [v] (e/server (reset! !fail-rate v)))
-      (dom/props {:min min, :max max, :style {:width "200px"}}))))
-
-#?(:clj (defn transact! "tx with configured latency and fail rate" [db tx]
-          (m/sp
-            (m/? (m/sleep @!latency))
-            (if (< (rand-int 10) @!fail-rate)
-              (throw (ex-info "tx failed" {:tx tx}))
-              (d/with db (dbg/dbg :tx tx))
-              #_@(d/transact !conn (dbg/dbg :tx tx))))))
 
 (e/defn AdvancedTodoList []
   (e/server

@@ -109,32 +109,22 @@ on submit"
 (e/defn MasterList
   "encapsulates both rendering the table and also adding elements to it, in 
 order to stabilize identity"
-  [query-records] ; specifically not entities due to the optimism strategy
+  [stable-kf CreateForm EditForm query-records] ; specifically not entities due to the optimism strategy
   (e/client 
     (let [!ids (atom {}) ; #tempid and/or reified id -> process-unique identity
-          stable-kf (partial contrib.identity/entity-id-locally-stabilzied! !ids tx-report) ; todo
-          local-index (CreateController. stable-kf TodoItemCreate #_{:task/status :active})
+          local-index (CreateController. stable-kf CreateForm) ; the local-index is the branch
           
-          ; the local-index is the branch
-          
-          ; does this operate on records or entity ids?
-          ; note, datomic entity api is has broken equality anyway
+          ; operate on records because datomic-entity api has broken equality
+          ; note, the optimistic view is also in record-shape not entity shape (though we could index that) 
           records (merge-unordered stable-kf
                     (vals local-index) ; must have matching pull shape
                     (try (e/server (query-records)) ; matching pull shape
                       (catch Pending _))) ; todo rethrow pending for load timers above
           
-      ; where is the transaction? Where is the 4-colored result on the create?
-      ; it MUST be in todo-item
-      ; TodoItem-create does not transact as it only submits at the last instant
-      ; local-index is a create REQUEST?
-          
-      ; todo move query diffing to server
           edit-txns (e/for-by stable-kf [record records] ; must include genesised records, for stability
-        ; Ensure local entities here, they've been submitted
-        ; What if the local-records end up in two places? That's a race, both will ensure
-        ; existance, ok, one will win (so long as tempids are not reused and remain valid)
-                      (TodoItem. record))]
+                      ; What if the local-records end up in two places? That's a race, both will 
+                      ; ensure existance, one will win (so long as tempids are not reused and remain valid)
+                      (EditForm. record))] ; Ensure local entities here, they've been submitted
       
       ; has both txn and :optimistic, for comparison
       edit-txns))) ; use this to complete circuit, hf/stage has been damaged by swap!
@@ -146,7 +136,10 @@ order to stabilize identity"
     (dom/div (dom/props {:class "todo-list"})
       #_(dom/div {:class "todo-items"})
       (e/server 
-        (let [tx (MasterList. (fn [] (todo-records hf/db)))]
+        (let [stable-kf (partial contrib.identity/entity-id-locally-stabilzied! !ids tx-report) ; todo
+              tx (MasterList. stable-kf
+                   TodoItemCreate #_{:task/status :active} 
+                   TodoItem (fn [] (todo-records hf/db)))]
           tx))
       (dom/p (dom/props {:class "counter"})
         (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))

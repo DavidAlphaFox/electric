@@ -79,7 +79,7 @@ updates are returned by side channel, see `Control`."
       (e/client
         (DDomInputController ...)))))
 
-(e/defn DomInputController
+(e/defn DomInputController ; client bias
   "[server bias] signal of what the user types as [status v']"
   [node event-type v-server ref!] #_[server-v] ; side channel
   (e/client
@@ -101,7 +101,7 @@ updates are returned by side channel, see `Control`."
   [checked-server] #_[*status*] ; dynamic status from Field?
   (e/client
     (dom/input (dom/props {:type "checkbox"})
-      (let [[status v] (e/client (DOMInputController. dom/node "change" checked-server (e/client (partial -node-checked! dom/node))))]
+      (let [[status v] (DOMInputController. dom/node "change" checked-server (partial -node-checked! dom/node))]
         (dom/style {:outline (str "2px solid " (progress-color status))})
         (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
         v))))
@@ -109,7 +109,7 @@ updates are returned by side channel, see `Control`."
 (e/defn Input [v-server]
   (e/client
     (dom/input
-      (let [[status v] (DOMInputController. dom/node "input" v-server (e/client (partial -node-value! dom/node)))]
+      (let [[status v] (DOMInputController. dom/node "input" v-server (partial -node-value! dom/node))]
         (dom/style {:outline (str "2px solid " (progress-color status))})
         (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
         v))))
@@ -165,7 +165,7 @@ updates are returned by side channel, see `Control`."
 order to stabilize identity"
   [stable-kf server-records CreateForm EditForm] ; specifically not entities due to the optimism strategy
   (e/client
-    (let [local-index (CreateController. stable-kf CreateForm)]
+    (let [local-index (CreateController. stable-kf CreateForm)] ; todo discrete result
       (e/server ; must not accidentally transfer local-index
         (For-by-streaming. stable-kf server-records (e/client local-index) ; matching pull shape
           EditForm)))))

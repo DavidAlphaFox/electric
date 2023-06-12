@@ -32,12 +32,12 @@
 
 (e/defn TodoItem [{:keys [db/id] :as ?record} submit!] ; pre-pulled, todo entity api
   (e/client
-    (dom/div (dom/style {:display "flex", :align-items "center"}) 
+    (dom/div (dom/style {:display "flex", :align-items "center"})
+      
+      ; div must concat two vdvs
+      ; and the dv component must propagate in parallel on both client and server
+      
       (e/server
-        ; strategy = commit asap, no reason to delay.
-        ; this means create-new records are imediately synced, which is correct
-        ; this means edits are isolated, which is correct
-        ; if edits should be batched, that's what hf/branch provides, so this is correct. 
         
         (ui5/Field.
           :record ?record ; should be lazy loaded - entity api. This is over-fetched. Thereby ensure right here?
@@ -68,13 +68,13 @@ on submit"
 ; how can Submit be wired directly to commit-stage in DT? 
       :parse identity
       :unparse identity
-      :txn (fn [v]
-             {#_#_:txn [[:db/add ?x :task/description v] ; no ID yet! Cannot transact, have local view repr only
-                        [:db/add ?x :task/status :active]
-                        [:db/add ?x :task/order (e/server (swap! !order-id inc))]]
-              :optimistic {:task/description v
+      
+      :optimistic (fn [v] {:task/description v
                            :task/status :active
-                           :task/order (e/server (swap! !order-id inc))}})
+                           :task/order (e/server (swap! !order-id inc))})
+      :txn (fn [v] [[:db/add ?x :task/description v] ; no ID yet! Cannot transact, have local view repr only
+                    [:db/add ?x :task/status :active]
+                    [:db/add ?x :task/order (e/server (swap! !order-id inc))]])
       (dom/props {:placeholder "Buy milk"})))
   #_(e/client v'-client) ; return optimistic client value as local-index for the masterlist
   )
@@ -118,3 +118,8 @@ on submit"
           ; optimistic 
           (ui/edn vdv nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))
           #_(ui/edn (e/server .) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)})))))))
+
+; Pending things show up in this list. And then what?
+; vdv shows up
+; should the status show up?
+; should the projected view show up?

@@ -3,7 +3,7 @@
   (:require [clojure.string :as str]
             [hyperfiddle.electric :as e])
   (:import #?(:clj [clojure.lang IFn IDeref])
-           [hyperfiddle.electric Failure]))
+           [hyperfiddle.electric Failure Pending]))
 
 (defmacro dbg
   ([form] `(dbg '~form ~form))
@@ -26,18 +26,26 @@
 
 (def !id (atom 0))
 
+(defn format-exception [e]
+  (cond 
+    (instance? Pending e) 'Pending
+    :else [(type e) (ex-message e)]))
+
+(defn format [v]
+  (cond 
+    (instance? Failure v) (format-exception (.-error v))
+    :else v))
+
 (defn instrument* [nm flow]
   (fn [n t]
     (let [id (swap! !id inc)
-          it (flow #(do (prn nm id :notified) (n)) #(do (prn nm id :terminated) (t)))]
+          it (flow
+               #(do (prn nm id :notified) (n)) 
+               #(do (prn nm id :terminated) (t)))]
       (reify
         IFn (#?(:clj invoke :cljs -invoke) [_] (prn nm id :cancelled) (it))
         IDeref (#?(:clj deref :cljs -deref) [_]
                  (let [v @it]
-                   (prn nm id :transferred
-                     (if (instance? Failure v)
-                       (let [e (.-error v)]
-                         [(type e) (ex-message e)])
-                       v))
+                   (prn nm id :transferred (format v))
                    v))))))
 (defmacro instrument [nm & body] `(new (instrument* ~nm (e/fn [] ~@body))))

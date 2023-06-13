@@ -11,7 +11,7 @@
 
 ; todo support both let and var by resolving var
 
-(defmacro bindx [bindings & body] (binding-pyramid* bindings body))
+(defmacro bindx [bindings & body] (binding-pyramid* bindings body)) ; broken in cljs why?
 
 (tests
   (macroexpand-1 '(bindx [a 1 b (inc a)] (inc b)))

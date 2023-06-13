@@ -30,7 +30,7 @@
                       :where [?e :task/status]] db)
             #_(sort-by :task/order #(compare %2 %1)))))
 
-(e/defn TodoItem [{:keys [db/id] :as ?record} submit!] ; pre-pulled, todo entity api
+(e/defn TodoItem [{:keys [db/id] :as ?record}] ; pre-pulled, todo entity api
   (e/client
     (dom/div (dom/style {:display "flex", :align-items "center"})
       
@@ -86,10 +86,10 @@ on submit"
     (dom/div (dom/props {:class "todo-list"})
       #_(dom/div {:class "todo-items"})
       (e/server 
-        (let [stable-kf (contrib.identity/Entity-id-locally-stabilzied!. hf/tx-report)
-              tx (MasterList. stable-kf (todo-records hf/db)
-                   TodoItem TodoItemCreate #_{:task/status :active})]
-          tx))
+        (let [stable-kf (contrib.identity/Entity-id-locally-stabilzied!. hf/tx-report)]
+          ; returns xdx by side channel
+          (MasterList. stable-kf (todo-records hf/db)
+            TodoItem TodoItemCreate #_{:task/status :active})))
       (dom/p (dom/props {:class "counter"})
         (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))
         (dom/text " items left")))))
@@ -97,29 +97,28 @@ on submit"
 (e/defn AdvancedTodoList []
   (e/server
     (binding [hf/db (e/watch !db)
-              hf/into-tx' hf/into-tx
-              hf/with (fn [db tx] ; inject datomic dependency 
-                        (try
-                          (let [{:keys [db-after tx-report]} (new (e/task->cp (transact! db tx)))]
-                            db-after)
-                          (catch Exception e 
-                            (println "...failure, e: " e)
-                            db)))]
+              hf/into-tx' hf/into-tx ; datomic specific into-tx
+              hf/with (fn [db tx] ; inject datomic dependency
+                        (try (new (e/task->cp (transact! db tx)))
+                          (catch Exception e  (println "...failure, e: " e) db)))]
       (e/client
         (Latency. 300 2000)
         (FailRate. 3 10))
-      (let [vdv (hf/branch
-                  (Page.))]
-        ; vdv is on the client actually, its optimistic. dv is also concurrently on the server.
-        ; perhaps those parallel code flows should be made explicit! Can Electric compiler solve it?
-        (e/client
-          (dom/hr)
-          (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
-          ; optimistic 
-          (ui/edn vdv nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))
-          #_(ui/edn (e/server .) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)})))))))
+      (let [[status x] (hf/branch ; how can it return xdx? use parent branch ha
+                         (Page.)
+                         (hf/Transact!. hf/dx) ; does it clear or work skip or what?
+                         (e/client
+                           (dom/hr)
+                           (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
+                           (ui/edn hf/x nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))
+                           (ui/edn (e/server hf/dx) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))))]))))
 
 ; Pending things show up in this list. And then what?
 ; vdv shows up
 ; should the status show up?
 ; should the projected view show up?
+
+
+; The big problem is that return values are colored which means they don't flow
+; out naturally, they ping pong all the way out. Because of a syntax ambiguity 
+; in Clojure. Thus we use the hf/branch call convention to invert control.

@@ -2,11 +2,13 @@
   (:import [hyperfiddle.electric Pending]
            #?(:cljs [goog.math Long]))
   (:require clojure.edn
+            [contrib.clojurex :refer [bindx]]
             [contrib.dynamic :refer [call-sym]]
             [clojure.spec.alpha :as s]
             [hyperfiddle.electric :as e]
             [missionary.core :as m]
-            hyperfiddle.electric-dom2))
+            hyperfiddle.electric-dom2
+            [hyperfiddle.api :as hf]))
 
 (def ^:dynamic *$*) ; dbval, for REPL usage. Available in cljs for HFQL datascript tests
 (e/def db "inject database value for hyperfiddle stage and HFQL")
@@ -80,10 +82,10 @@
            (m/via m/blk
              ;; return basis-t ?
              (swap! !t (fn [[db tx0]]
-                         [(with db tx) ; injected datomic dep
+                         [(with db tx) ; injected datomic dep, to avoid hardcoding a specific Datomic prodcut line
                           (into-tx' schema tx0 tx)]))))))) ; datascript is different
 
-(e/def Transact!) ; server
+(e/def Transact!) ; server -- rename to With
 (e/def ClearStage!) ; server
 (e/def stage) ; server
 (e/def loading) ; client
@@ -97,30 +99,38 @@
                   s))]
       x)))
 
+(e/def !status) (e/def status (e/watch !status))
+(e/def !x) (e/def x (e/watch !x))
+(e/def !dx) (e/def dx (e/watch !dx))
+(e/def !tx-report) (e/def tx-report (e/watch !tx-report))
+
 (e/defn Branch [Body-server] ; todo colorless
-  (e/server
-    (let [return (m/dfv)
-          parent-db db
-          !t (atom #_::unknown [db []]) [db stage :as t] (e/watch !t)] ; BAD
-      (binding [hyperfiddle.api/db db
-                hyperfiddle.api/stage stage
+  (e/client
+    (binding [!status (atom ::init) status (e/watch !status)
+              !x (atom (e/server (get record a))) x (e/watch !x)] ; fixme record
+      (e/server
+        (bindx [!dx (atom nil) dx (e/watch !dx)
+                !tx-report (atom nil) tx-report (e/watch !tx-report)
+                hyperfiddle.api/db (or (:db-after tx-report) ; get from queue instead?
+                                     hyperfiddle.api/db)
                 hyperfiddle.api/Transact! (e/fn [tx]
                                             #_(println "Transact! " (hash !t) "committing: " tx)
-                                            (let [r (Transact!*. !t tx)]
-                                              #_(println "Transact! " (hash !t) "commit result: " r)))
-                hyperfiddle.api/ClearStage! (e/fn [] (reset! !t [parent-db []]) nil)]
-        (e/client
-          (e/with-cycle [loading false]
-            (binding [hyperfiddle.api/loading loading]
-              #_(dom/div (name loading) " " (str (Load-timer.)) "ms")
-              (try
-                (e/server
-                  (let [x (Body-server.)] ; cycle x?
-                    #_(println 'Branch x)
-                    (return x)))
-                false (catch Pending e true))))
-          nil))
-      (new (e/task->cp return)))))
+                                            (reset! !tx-report (Transact!*. !t tx))
+                                            #_(println "Transact! " (hash !t) "commit result: " tx-report))] 
+
+          (e/client
+            (e/with-cycle [loading false]
+              (binding [hyperfiddle.api/loading loading]
+                #_(dom/div (name loading) " " (str (Load-timer.)) "ms")
+                (try
+                  (e/server
+                      ; today, Body must return by side channel to avoid accidental transfer
+                    (let [_xdx (Body-server.)])) ; cycle xdx ?
+                  false (catch Pending e true)))))
+          
+          #_[x dx] nil))
+      ; there's really no point to returning anything, you need a nested branch for the side-channel call convention
+      [status x]))) ; return optimistic view for client display, txn is never seen on client anyway.
 
 (defmacro branch [& body] `(new Branch (e/fn [] ~@body)))
 

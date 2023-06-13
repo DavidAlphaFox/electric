@@ -24,71 +24,28 @@
 (defn progress-color [state]
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
 
-(e/defn Field
-  "[server bias] orchestration helper for declarative config. Optimistic local
-updates are returned by side channel, see `Control`."
+(e/defn Field ; operate at AV level of asbtraction; optimistic views look like {a v} + any extra stuff -- todo datascript
   [{:keys [record ; record on server except create-new
            a Control parse unparse txn]}]
-  (e/server
-    (binding [!v'-server (atom nil)] ; setup side channel
-      (let [v-domain (get record a)
-            v-physical (parse v-domain)
-            _v'-physical (Control. v-physical) ; optimistic, can it rollback? ; monitor progress here? 
-            v'-physical (e/watch !v'-server) ; weird trick - the InputController owns the sync
-            ; otherwise, progress is monitored right here, which is the wrong place. (or is it? - yes due
-            ; to stabilizing concurrent edits inside the control.)
-            v'-domain (unparse v'-physical)
-            {:keys [txn optimistic] :as vdv} (txn v'-domain)]
-        
-        (if-not txn ; in create-new case, we don't have a txn (due to no ID until popover submit)
-          vdv ; but we have the perfect optimistic record already!
-          (let [{:keys [db tx-report]} (hf/Transact!. field-tx)] ; impacts this branch only; even needed?
-            vdv))
-        
-        ; still send both v and dv up to top? why?
-        ; because at higher levels we may concat in more txn at form level e.g. create-new-todo
-        ; they will have branched in this case, causing the above to be local.
-        vdv))))
-
-#(:cljs (def ^:dynamic !v'-client #_(atom nil))) ; out of band return
-#(:clj (def ^:dynamic !v'-server #_(atom nil))) ; out of band return
-
-; can we use currying to fix this concern?
-#(:cljs (def !sync (atom nil))) ; out of band return
-(e/def sync (e/client (e/watch !sync))) ; todo cannot be global
-
-
-;   1. status (green dot), client-side (includes optimistic value)
-;   2. v', server-side (so that it's safe, this is what the green dot is monitoring)
-;   3. v'-client ??? 
-(e/defn SyncController
-  "locally return [status v'], + remotely return `v-server` by side channel"
-  [v'-local]
   (e/client
-    ;(reset! !sync) ; side channel
-    (try
-      ; todo don't roundtrip initial value?
-      [::ok (e/server (reset! !v'-server v'-local))] ; make it "safe" immediately, + side channel
-      ; ::ok is never actually seen, overridden in DomController2
-      (catch Pending _ [::pending v'-local]) ; optimistic, must not lag
-      (catch :default ex [::failed ex])))) ; impossible
-
-(comment 
-  (e/server
-    (binding [!server-v (atom .)] ; return channel
-      (e/client
-        (DDomInputController ...)))))
+    (reset! hf/!x (optimistic (unparse (Control. (e/server (parse (get record a))) status)))) ; check transfers
+    (reset! !status (if-not txn ; create-new does not have one
+                      ::ok
+                      (try (e/server (reset !hf/dx (when (txn v)))) ::ok
+                        (catch Pending _ ::pending)))))
+  (e/server (hf/Transact!. hf/dx))) ; optional
 
 (e/defn DomInputController ; client bias
   "[server bias] signal of what the user types as [status v']"
   [node event-type v-server ref!] #_[server-v] ; side channel
   (e/client
     (let [>v (->> (m/observe (cc/fn [!] (dom-listener node event-type ! opts))) ; user input events
-                (m/relieve {}) ; input value signal, never backpressure the user 
-                (m/eduction (map (fn event->value [e] (parse (ref! (.-target e))))))
-                (m/reductions {} [::ok v-server])) ; try to accidental round trip of initial value
-          [status v :as state] (SyncController. (new >v))] ; also returns server value in side channel
+               (m/relieve {}) ; input value signal, never backpressure the user 
+               (m/eduction (map (fn event->value [e] (parse (ref! (.-target e))))))
+               (m/reductions {} v-server))
 
+          [status v :as state] (SyncController. (new >v))]
+; todo this is hoisted out, but what about focused logic? OOps?
       (cond
         (dom/Focused?. node) state
         (= ::pending status) state
@@ -98,7 +55,7 @@ updates are returned by side channel, see `Control`."
 
 (e/defn Checkbox
   "[server bias]"
-  [checked-server] #_[*status*] ; dynamic status from Field?
+  [checked-server status]
   (e/client
     (dom/input (dom/props {:type "checkbox"})
       (let [[status v] (DOMInputController. dom/node "change" checked-server (partial -node-checked! dom/node))]
@@ -106,7 +63,7 @@ updates are returned by side channel, see `Control`."
         (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
         v))))
 
-(e/defn Input [v-server]
+(e/defn Input [v-server status]
   (e/client
     (dom/input
       (let [[status v] (DOMInputController. dom/node "input" v-server (partial -node-value! dom/node))]
@@ -158,7 +115,9 @@ updates are returned by side channel, see `Control`."
                     (-> (vals pending-index) (map :optimistic)) ; must have matching pull shape
                     server-records)]
       (e/for-by kf [record records] ; must include genesised records, for stability
-        (Branch. record))))) ; Ensure local entities here, they've been submitted
+        (Branch. record)
+        ...client-cont
+        ...server-cont)))) ; Ensure local entities here, they've been submitted
 
 (e/defn MasterList
   "encapsulates both rendering the table and also adding elements to it, in 
@@ -167,5 +126,20 @@ order to stabilize identity"
   (e/client
     (let [local-index (CreateController. stable-kf CreateForm)] ; todo discrete result
       (e/server ; must not accidentally transfer local-index
-        (For-by-streaming. stable-kf server-records (e/client local-index) ; matching pull shape
-          EditForm)))))
+        (hf/branch
+          (For-by-streaming. stable-kf server-records (e/client local-index) ; matching pull shape
+            (e/fn [record]
+              (hf/branch
+                (EditForm. record)
+                ... hf/dx ...
+                ))))))))
+
+; does it need to branch each body and then collect and delegate to parent branch?
+
+; client - collect hf/x
+; server - collect hf/dx
+; theres a 1:N due to the e/for
+
+; hf/branch is as common as reutrning values, then. it's just a call convention
+; hf/branchN ?
+; how do you do it in CT? mount/unmount?

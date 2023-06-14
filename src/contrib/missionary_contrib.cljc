@@ -48,6 +48,11 @@
     (loop [v (m/? task)]
       (m/amb v (recur (m/? task))))))
 
+(defn slow [ms f!]
+  (m/sp
+    (m/? (m/sleep ms))
+    (f!)))
+
 (defn document
   "compare (document log) to (d/entity db eid). if a datomic txn is [op eid a v], 
 log here is [op a v], or in other words, there is only one entity (the `eid` is 

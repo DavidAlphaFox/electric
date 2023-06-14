@@ -9,7 +9,6 @@
             [hyperfiddle.electric-ui4 :as ui4]
             [missionary.core :as m]
             [contrib.debug :as dbg]
-            [hyperfiddle.client.edn-view :as ev]
             [hyperfiddle.api :as hf]))
 
 (e/def local?)

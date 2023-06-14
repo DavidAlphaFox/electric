@@ -1,4 +1,4 @@
-(ns dustin.y2023.cc-return-distributed
+(ns dustin.y2023.electric-data-ioc-workaround
   (:require [hyperfiddle.electric :as e]
             [missionary.core :as m]))
 
@@ -7,25 +7,25 @@
 ; How to return a (client) optimistic view + a (server) transaction request from an e/fn?
 ; How to do the same for an e/for which collects N of these
 
-(e/def !x) (e/def x (e/watch !x))
-(e/def !dx) (e/def dx (e/watch !dx))
+(e/def !x) (e/def x)
+(e/def !dx) (e/def dx)
 
 
 (defmacro Branch [Body]
-  (e/client 
-    (binding [!x (atom nil)]
-      (e/server 
-        (binding [!dx (atom nil)]
-          (let [xdx (Body.)]))))))
+  (e/client
+    (binding [!x (atom nil) x (e/watch !x)]
+      (e/server
+        (binding [!dx (atom nil) dx (e/watch !dx)]
+          (let [_xdx (Body.)]
+            nil))))))
 
 (defmacro branch [& body] (e/fn [] ~@body))
 
-(e/defn CheckboxField [{:keys [a v txn]}]
+(e/defn CheckboxField [{:keys [a v txn optimistic]}]
   (e/client
     (let [x'-client (new (m/reductions (m/relieve {} (m/observe (fn [!] ...)))))]
-     (vector
-       (e/server (txn x'-client))
-       (e/client x')))))
+      (e/server (reset! !x (txn x'-client)))
+      (e/client (reset! !dx (optimistic x'-client))))))
 
 (e/defn Page []
   (e/client 
@@ -46,6 +46,12 @@
 (e/defn App []
   (e/server
     (let [xdx (branch
-                (let [[x dx] (Page.)]
+                (do (Page. args)
                   (e/server (transact dx))
-                  (e/client (dom/pre (dom/text (pprint-str x))))))])))
+                  (e/client (dom/pre (dom/text (pprint-str x)))))
+                
+                #_(let [[x dx] (Page. args)]
+                    (e/server (transact dx))
+                    (e/client (dom/pre (dom/text (pprint-str x))))))])))
+
+; 

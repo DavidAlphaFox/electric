@@ -7,32 +7,7 @@
             [hyperfiddle.history :as history]
             [user.demo-index :as demos]
 
-            user.demo-two-clocks
-            user.demo-toggle
-            user.demo-system-properties
-            user.demo-chat
-            user.demo-chat-extended
-            user.demo-webview
-            user.demo-todomvc
-            user.demo-todomvc-composed
-
-            user.demo-explorer
-            user.demo-10k-dom
-            user.demo-svg
-            user.demo-todos-simple
-            wip.demo-todos-advanced-old
-            wip.demo-todos-optimistic
-            user.tutorial-7guis-1-counter
-            user.tutorial-7guis-2-temperature
-            user.tutorial-7guis-4-timer
-            user.tutorial-7guis-5-crud
-            user.demo-virtual-scroll
-            user.demo-color
-            user.demo-tic-tac-toe
-            user.tutorial-blinker
-            wip.tag-picker
-            wip.demo-custom-types
-            wip.tracing
+            dustin.y2023.electric-tuple3
 
             ; this demo require `npm install`
             #_user.demo-reagent-interop
@@ -48,43 +23,9 @@
 
 ; todo: macro to auto-install demos by attaching clj metadata to e/defn vars?
 
-(e/defn Pages [page]
-  (e/server
-    (case page
-      `user.demo-index/Demos user.demo-index/Demos
-      `user.demo-index/Secrets user.demo-index/Secrets
-      `user.demo-two-clocks/TwoClocks user.demo-two-clocks/TwoClocks
-      `user.demo-explorer/DirectoryExplorer user.demo-explorer/DirectoryExplorer
-      ;user.demo-10k-dom/Dom-10k-Elements user.demo-10k-dom/Dom-10k-Elements ; todo too slow to unmount, crashes
-      `wip.tag-picker/TagPicker wip.tag-picker/TagPicker
-      `user.demo-toggle/Toggle user.demo-toggle/Toggle
-      `wip.demo-custom-types/CustomTypes wip.demo-custom-types/CustomTypes
-      `user.demo-system-properties/SystemProperties user.demo-system-properties/SystemProperties
-      `user.demo-chat/Chat user.demo-chat/Chat
-      `user.demo-chat-extended/ChatExtended user.demo-chat-extended/ChatExtended
-      `user.demo-webview/Webview user.demo-webview/Webview
-      `user.demo-todos-simple/TodoList user.demo-todos-simple/TodoList ; css fixes
-      `user.demo-todomvc/TodoMVC user.demo-todomvc/TodoMVC
-      `user.demo-todomvc-composed/TodoMVC-composed user.demo-todomvc-composed/TodoMVC-composed
-      `user.demo-color/Color user.demo-color/Color
-      `user.demo-virtual-scroll/VirtualScroll user.demo-virtual-scroll/VirtualScroll
-      `user.tutorial-7guis-1-counter/Counter user.tutorial-7guis-1-counter/Counter
-      `user.tutorial-7guis-2-temperature/TemperatureConverter user.tutorial-7guis-2-temperature/TemperatureConverter
-      `user.tutorial-7guis-4-timer/Timer user.tutorial-7guis-4-timer/Timer
-      `user.tutorial-7guis-5-crud/CRUD user.tutorial-7guis-5-crud/CRUD
-      `user.demo-tic-tac-toe/TicTacToe user.demo-tic-tac-toe/TicTacToe
-      `user.demo-svg/SVG user.demo-svg/SVG
-      `user.tutorial-blinker/Blinker user.tutorial-blinker/Blinker
-      `wip.tracing/TracingDemo wip.tracing/TracingDemo
-      ;`user.demo-reagent-interop/ReagentInterop (when react-available user.demo-reagent-interop/ReagentInterop)
-      ;::demos/dennis-exception-leak wip.dennis-exception-leak/App2
-      ;`wip.demo-stage-ui4/CrudForm wip.demo-stage-ui4/CrudForm
-      ;`wip.datomic-browser/DatomicBrowser wip.datomic-browser/DatomicBrowser
-      NotFoundPage)))
-
 (e/defn Main []
   (binding [dom/node js/document.body]
-    (e/server (wip.demo-todos-optimistic/AdvancedTodoList.))))
+    (e/server (dustin.y2023.electric-tuple3/Example.))))
 
 #_
 (e/defn Main []

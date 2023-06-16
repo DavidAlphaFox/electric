@@ -29,15 +29,15 @@
 
 (e/defn Page []
   (e/client
-    (let [xdxs (e/for-by [record records] ; streaming actually
-                 (CheckboxField.
-                   {:a :task/status
-                    :v (query-from-server db)
-                    :txn (fn [x'] [[:db/add e :task/status x']])
-                    :optimistic (fn [x'] {:task/status x'})})
-                 (Vector.
-                   (e/client x)
-                   (e/server dx)))]
+    (let [[xs dxs] (e/for-by [record records] ; streaming actually
+                     (CheckboxField.
+                       {:a :task/status
+                        :v (query-from-server db)
+                        :txn (fn [x'] [[:db/add e :task/status x']])
+                        :optimistic (fn [x'] {:task/status x'})})
+                     (Cons$.
+                       (e/client x)
+                       (e/server dx)))]
       (e/server (transact! dxs) #_(e/for [dx dxs] (dom/pre (dom/text (pprint-str dx)))))
       (e/client (dom/pre (dom/text (pprint-str xs))) #_(e/for [x xs] (dom/pre (dom/text (pprint-str x)))))
       )))
@@ -53,4 +53,14 @@
                     (e/server (transact dx))
                     (e/client (dom/pre (dom/text (pprint-str x))))))])))
 
-; 
+(comment
+  (e/def !a) (e/def a)
+  (e/def !b) (e/def b)
+  (defmacro Branch [Body]
+    (e/server
+      (binding [!a (atom nil) a (e/watch !a)]
+        (e/server
+          (binding [!b (atom nil) b (e/watch !b)]
+            (let [ab (Body.)]))))))
+
+  (defmacro branch [& body] (e/fn [] ~@body)))

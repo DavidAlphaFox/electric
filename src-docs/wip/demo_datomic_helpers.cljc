@@ -1,5 +1,45 @@
-(ns wip.demo-datomic-helpers)
+(ns wip.demo-datomic-helpers
+  (:require [missionary.core :as m]
+            [hyperfiddle.electric :as e]))
 
+(defn conn< [uri]
+  (m/signal (m/observe (fn [!]
+                         (let [!conn (d/connect uri)]
+                           (! !conn)
+                           #(d/release !conn))))))
+
+(defn tx-reports> [conn] ; don't call twice
+  (m/stream
+    (m/ap
+      (let [!q (m/?< (m/observe (fn [!] (! (d/tx-report-queue conn))
+                                  #(d/remove-tx-report-queue conn))))]
+        (loop []
+          (m/amb (m/? (m/via m/blk (.take ^LinkedBlockingQueue !q)))
+            (recur)))))))
+
+(defn db< [conn]
+  (m/signal (m/relieve {} (m/ap
+                            (m/amb (d/db (m/?< conn))
+                              (:db-after (m/?< (tx-reports> conn))))))))
+
+(e/def txrq (new (tx-reports> conn)))
+
+(e/defn Db [conn]
+  (d/db conn)
+  (:db-after txrq)
+  )
+
+#_
+(e/defn Conn [uri]
+  (let [conn (d/connect uri)]
+    (e/on-unmount #(d/release conn))
+    conn))
+
+(e/def conn (Conn. uri))
+
+; userland
+(e/def conn (new (conn< uri)))
+(e/def db (new (db< conn)))
 
 ;; user configurable latency and tx fail rate
 #?(:clj (def !latency (atom 200)))

@@ -22,3 +22,5 @@
   (def ^:dynamic a)
   (def ^:dynamic b)
   (bindx [a 1 b (inc a)] (inc b)) := 3)
+
+(defmacro do1 [x & body] `(let [ret# ~x] ~@body ret#))

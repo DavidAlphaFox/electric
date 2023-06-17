@@ -1,14 +1,15 @@
 (ns hyperfiddle.stage
-  (:require [hyperfiddle.rcf :refer [tests tap % with]]))
+  (:require [hyperfiddle.api :as hf]
+            [hyperfiddle.rcf :refer [tests tap % with]]))
 
 (tests
-  (def edits [[::dirty {:task/status :done} [[:db/add '. :task/status :done]]]
-              [::dirty {:task/description "feed baby"} [[:db/add '. :task/description "feed baby"]]]
-              [::pending {} [[:db/add]]]
-              [::synced {} nil]
-              [::failed {} [[:db/add]] "rejected"]])
+  (def edits [[::hf/dirty {:task/status :done} [[:db/add '. :task/status :done]]]
+              [::hf/dirty {:task/description "feed baby"} [[:db/add '. :task/description "feed baby"]]]
+              [::hf/pending {} [[:db/add]]]
+              [::hf/synced {} nil]
+              [::hf/failed {} [[:db/add]] "rejected"]])
   (transpose edits)
-  := [[::dirty ::dirty ::pending ::synced ::failed]
+  := [[::hf/dirty ::hf/dirty ::hf/pending ::hf/synced ::hf/failed]
       [#:task{:status :done} #:task{:description "feed baby"} {} {} {}]
       [[[:db/add '. :task/status :done]]
        [[:db/add '. :task/description "feed baby"]]
@@ -32,18 +33,18 @@
 
 (tests
   (squash-edits
-    [[::dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
-     [::dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]])
+    [[::hf/dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
+     [::hf/dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]])
   := [#:task{:status :done, :description "feed baby"}
       [[:db/add '. :task/status :done] [:db/add '. :task/description "feed baby"]] nil])
 
 (tests
   (group-by first edits)
-  := {::dirty [[::dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
-               [::dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]],
-      ::pending [[::pending {} [[:db/add]]]],
-      ::synced [[::synced {} nil]],
-      ::failed [[::failed {} [[:db/add]] "rejected"]]})
+  := {::hf/dirty [[::hf/dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
+                  [::hf/dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]],
+      ::hf/pending [[::hf/pending {} [[:db/add]]]],
+      ::hf/synced [[::hf/synced {} nil]],
+      ::hf/failed [[::hf/failed {} [[:db/add]] "rejected"]]})
 
 (defn aggregate-edits [edits]
   (-> (group-by first edits)
@@ -51,10 +52,10 @@
 
 (tests
   (aggregate-edits edits)
-  := {::dirty [#:task{:status :done, :description "feed baby"}
-               [[:db/add '. :task/status :done]
-                [:db/add '. :task/description "feed baby"]]
-               nil],
-      ::pending [{} [[:db/add]] nil],
-      ::synced [{} [] nil],
-      ::failed [{} [[:db/add]] ["rejected"]]})
+  := {::hf/dirty [#:task{:status :done, :description "feed baby"}
+                  [[:db/add '. :task/status :done]
+                   [:db/add '. :task/description "feed baby"]]
+                  nil],
+      ::hf/pending [{} [[:db/add]] nil],
+      ::hf/synced [{} [] nil],
+      ::hf/failed [{} [[:db/add]] ["rejected"]]})

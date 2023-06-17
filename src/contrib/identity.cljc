@@ -49,8 +49,7 @@ previously seen."
 
 (e/defn Entity-id-locally-stabilzied! [tx-report]
   (let [!ids (atom {})] ; #tempid and/or reified id -> process-unique identity
-    (fn [record]
-      (entity-id-locally-stabilzied! !ids tx-report record))))
+    (partial entity-id-locally-stabilzied! !ids tx-report)))
 
 (comment #_tests
   (def !ids (atom {}))

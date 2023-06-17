@@ -1,6 +1,7 @@
 (ns wip.demo-todos-optimistic
   (:import [hyperfiddle.electric Pending])
-  (:require [contrib.data :refer [merge-unordered]]
+  (:require [contrib.clojurex :refer [do1]]
+            [contrib.data :refer [merge-unordered]]
             [contrib.debug :as dbg]
             [contrib.identity :refer [tempid?]]
             #?(:clj [datomic.api :as d]) ; database on server
@@ -10,6 +11,7 @@
             [hyperfiddle.electric-data :refer [Cons$ Car Cdr]]
             [hyperfiddle.electric-ui4 :as ui4]
             [hyperfiddle.electric-ui5 :as ui5 :refer [CreateController MasterList Field]]
+            [hyperfiddle.stage :refer [aggregate-edits]]
             [missionary.core :as m]
             [wip.demo-datomic-helpers :refer [Latency FailRate transact! db tx-report]]))
 
@@ -33,7 +35,7 @@
 (e/defn TodoItem [{:keys [db/id] :as ?record}] ; pre-pulled, todo entity api
   (e/client
     (dom/div (dom/style {:display "flex", :align-items "center"})
-      (ui5/aggregate-edits
+      (aggregate-edits
         ; single optimistic document, multiple txns?
         ; send up the best possible viewstate
         (ui5/Field.
@@ -54,22 +56,24 @@
 (e/defn TodoItemCreate "just another form, the caller will branch and deal with genesis
 on submit"
   []
-  (dam ; divert signal to local dirty atom until submit
-    (ui5/aggregate-edits
-      (ui5/Field.
-        :record (e/server {:task/description nil})
-        :Control ui5/Input ; todo esc to revert
+  (aggregate-edits
+    (ui5/Field.
+      :record (e/server {:task/description nil})
+      :Control ui5/Input ; todo esc to revert
 ; how can Submit be wired directly to commit-stage in DT?
-        :parse identity
-        :unparse identity
-        :optimistic (fn [v] {:task/description v
-                             :task/status :active
-                             :task/order next-order-id})
-        :txn (fn [v] [[:db/add ?x :task/description v] ; no ID yet! Cannot transact, have local view repr only
-                      [:db/add ?x :task/status :active]
-                      [:db/add ?x :task/order next-order-id]])
+      :parse identity
+      :unparse identity
+
+      ; no ID yet for create
+      :optimistic (fn [v] (fn [e] {:db/id e
+                                   :task/description v
+                                   :task/status :active
+                                   :task/order next-order-id}))
+      :txn (fn [v] (fn [e] [[:db/add e :task/description v]
+                            [:db/add e :task/status :active]
+                            [:db/add e :task/order next-order-id]]))
       ; on submit, latch branch
-        (dom/props {:placeholder "Buy milk"})))))
+      (dom/props {:placeholder "Buy milk"}))))
 
 (e/defn Page []
   (e/client
@@ -97,16 +101,20 @@ on submit"
         (Latency. 300 2000)
         (FailRate. 3 10))
 
-      (let [{:keys [::dirty] :as edits} (Page.)] ; accidental transfer
-        (reset! !tx-report
-          (try
-            (e/server
-              (new (e/task->cp (transact! conn dirty #_(Cdr. stage))))
-              ...notify-completion)
-            (catch Pending _
-              ...notify-pending)
-            (catch Exception e
-              ...notify-failure)))
+      (let [{:keys [::hf/dirty] :as edits} (Page.)] ; accidental transfer
+
+
+        (try
+          (e/server
+            (reset! !tx-report
+              ; can correlate the dirty-txn with the tx-report here
+              ; promote dirty edits to pending while await the tx-report
+              (promote! dirty ::hf/pending) ; add them to local queries
+              ; we need a special tx-report which understands ::hf/pending ?
+              (case (new (e/task->cp (transact! conn dirty #_(Cdr. stage))))
+                (promote! dirty ::hf/synced))))
+          (catch Pending _) ; can it even happen?
+          (catch Exception e (promote! dirty ::hf/failed)))
 
         (e/client
           (dom/hr)

@@ -2,13 +2,12 @@
   #?(:cljs (:require-macros hyperfiddle.electric-ui4))
   (:refer-clojure :exclude [long double keyword symbol uuid range])
   (:require
+    [contrib.clojurex :refer [do1]]
     clojure.edn
     [contrib.str]
     [hyperfiddle.electric :as e]
     [hyperfiddle.electric-dom2 :as dom]
     [missionary.core :as m]))
-
-(defmacro do1 [x & body] `(let [ret# ~x] ~@body ret#))
 
 #?(:cljs (defn value [^js e] (.-target.value e))) ; workaround inference warnings, todo rename
 #?(:cljs (defn checked [^js e] (.-target.checked e)))

@@ -80,52 +80,57 @@
       (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
       v')))
 
+(e/defn Button [label rf acc0]
+  (dom/button
+    (dom/text label)
+    (->> (m/observe (fn [!] (dom-listener dom/node "click" !)))
+      (m/reductions rf acc0))))
+
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
-(defn with-genesis [db {:keys [optimistic txn] :as xdx}]
+(defn with-genesis [db {[x dx] ::hf/dirty :as edits}]
   (let [id (contrib.identity/genesis-tempid! db)]
-    {#_#_:txn ...
-     :optimistic (merge optimistic {:db/id id})}))
+    ; do we have a txn now?
+    ; how does this edit flow through the masterlist to the top?
+    (update-in edits [::hf/dirty] (fn [[x dx]] [(x id) (dx id)])))) ; see TodoItemCreate
 
 (e/defn CreateController
   "maintains a local index of created entities by watching the Datomic tx-report"
-  [kf Body #_&args]
-  (let [!pending-index (atom {}), pending-index (e/watch !pending-index) ; perhaps global to the client, is it a datascript db?
-        local-tempids (vals pending-index)
-        promoted-tempids (vals (:ids->tempids >tx-report)) ; includes those from other sessions
-        local-promotions (clojure.set/intersection promoted-tempids local-tempids)]
+  [kf Form #_&args]
+  (let [!genesis-edits-index (atom {}), genesis-edits-index (e/watch !genesis-edits-index) ; perhaps global to the client, is it a datascript db?
+        genesis-tempids (keys genesis-edits-index)
+        birthed-tempids (vals (:ids->tempids >tx-report))] ; includes those from other sessions
 
-    (when (seq local-promotions) ; these genesis records have now been promoted
-      ; and now appear in the masterlist query, so stop tracking them locally.
-      (swap! !pending-index #(apply dissoc % local-promotions))) ; "birth" - independent entity is no longer managed by the mother
+    (when-some [local-births (seq (clojure.set/intersection birthed-tempids
+                                    genesis-tempids))]
+      ; "Birthed" entities now appear in the masterlist query, so the entity
+      ; is now independent, i.e. no longer managed by its mother.
+      (swap! !genesis-edits-index #(apply dissoc % local-births)))
 
-    (let [vdv (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
-                          (e/fn Body' []
-                            ; no point in updating the popover-local dbval here, as the popover is closing.
-                            (e/server (with-genesis (e/snapshot hf/db) ; !!! todo make discrete
-                                        (Body.))))))]
-      (swap! !pending-index assoc (kf (:optimistic vdv)) vdv) ; discrete!
-      pending-index))) ; the local-index is the branch
+    ; Popover diverts the form signal to local dirty atom until submit
+    (let [{[x dx] ::hf/dirty :as edits} (with-genesis hf/db
+                                          (Popover. "open" Form))] ; pending until commit
+      (swap! !genesis-edits-index assoc (kf x) edits) ; discrete!
+      (vals genesis-edits-index))))
 
-(e/defn For-by-streaming [stable-kf pending-index server-records Branch]
-  (e/client
-    ; operate on records because datomic-entity api has broken equality
-    ; note, the optimistic view is also in record-shape not entity shape (though we could index that)
-    (let [records (merge-unordered stable-kf ; todo rethrow pending for load timers above
-                    (-> (vals pending-index) (map :optimistic)) ; must have matching pull shape
-                    server-records)]
-      (e/for-by kf [record records] ; must include genesised records, for stability
-        (Branch. record)
-        ...client-cont
-        ...server-cont)))) ; Ensure local entities here, they've been submitted
+(e/defn For-by-streaming [stable-kf server-records genesis-records Branch]
+  ; operate on records because datomic-entity api has broken equality
+  (let [#_#_records (merge-unordered stable-kf genesis-records server-records)]
+    (e/client
+      (e/for-by stable-kf [record genesis-records] ; must have matching pull shape
+        (Branch. record)))
+    ; todo unify into one for-by to fix unintentional reboot on birth
+    (e/server
+      (e/for-by stable-kf [record server-records]
+        (Branch. record)))))
 
 (e/defn MasterList
   "encapsulates both rendering the table and also adding elements to it, in
 order to stabilize identity"
   [stable-kf server-records EditForm CreateForm] ; specifically not entities due to the optimism strategy
   (e/client
-    (let [stage (CreateController. stable-kf CreateForm)] ; todo discrete result
-      (aggregate-edits
-        (e/server ; must not accidentally transfer local-index
-          (For-by-streaming. stable-kf server-records (e/client stage) ; matching pull shape
+    (let [{:keys [::hf/dirty ::hf/pending]} (CreateController. stable-kf CreateForm)]
+      (apply aggregate-edits dirty
+        (e/server ; accidental transfer
+          (For-by-streaming. stable-kf server-records pending
             (EditForm. record)))))))

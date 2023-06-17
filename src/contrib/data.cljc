@@ -284,6 +284,12 @@
   (map + [1 1 1] [1 1 1 1]) := '(2 2 2)
   ((map-pad 0) + [1 1 1] [1 1 1 1]) := '(2 2 2 1))
 
+(defn transpose [xs] (vec (apply (map-pad nil) vector xs)))
+
+(tests
+  (transpose [[1 2 3]]) := [[1] [2] [3]]
+  (transpose [[1 2 3] [4 5 6]]) := [[1 4] [2 5] [3 6]])
+
 (defn str-last-n [n s]
   #?(:clj (.substring s (max 0 (- (.length s) n)))
      :cljs (apply str (reverse (take n (reverse s))))))

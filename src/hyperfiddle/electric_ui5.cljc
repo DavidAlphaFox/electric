@@ -2,17 +2,17 @@
   #?(:cljs (:require-macros hyperfiddle.electric-ui5))
   (:refer-clojure :exclude [long double keyword symbol uuid range])
   (:require clojure.edn
+            [contrib.data :refer [transpose index-by]]
+            [contrib.debug :as dbg]
             [contrib.identity :refer [tempid?]]
             contrib.str
+            [hyperfiddle.api :as hf]
             [hyperfiddle.electric :as e]
-            [hyperfiddle.electric-dom2 :as dom :refer [-target-value -node-checked! -node-value!]]
+            [hyperfiddle.electric-dom2 :as dom]
             [hyperfiddle.electric-ui4 :as ui4]
-            [missionary.core :as m]
-            [contrib.debug :as dbg]
-            [hyperfiddle.api :as hf]))
-
-(e/def local?)
-(def tempid? (some-fn nil? string?))
+            [hyperfiddle.electric-data :refer [Triple First Second Third]]
+            [hyperfiddle.rcf :refer [tests tap % with]]
+            [missionary.core :as m]))
 
 (e/defn On-input-submit [node]
   ; (assert node is type input)
@@ -23,61 +23,138 @@
 (defn progress-color [state]
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
 
-(e/defn Field ; operate at AV level of asbtraction; optimistic views look like {a v} + any extra stuff -- todo datascript
-  [{:keys [record ; record on server except create-new
-           a Control parse unparse txn]}]
+(e/defn Field ; client bias, bias is v. delicate
+  [{:keys [v Control parse unparse txn] #_[status]
+    :or {txn identity}}]
   (e/client
-    (reset! hf/!x (optimistic (unparse (Control. (e/server (parse (get record a))) status)))) ; check transfers
-    (reset! !status (if-not txn ; create-new does not have one
-                      ::ok
-                      (try (e/server (reset !hf/dx (when (txn v)))) ::ok
-                        (catch Pending _ ::pending)))))
-  (e/server (hf/Transact!. hf/dx))) ; optional
+    (let [!status (atom ::synced) status (e/watch !status)
+          !x (atom nil) x (e/watch !x)
+          !dx (e/server (atom nil)) dx (try (e/server (e/watch !dx)) (catch Pending _)) ; prevent delays
+          !err (atom nil) err (e/watch !err)]
 
-(e/defn DomInputController ; client bias
-  "[server bias] signal of what the user types as [status v']"
-  [node event-type v-server ref!] #_[server-v] ; side channel
-  (e/client
-    (let [>v (->> (m/observe (cc/fn [!] (dom-listener node event-type ! opts))) ; user input events
-               (m/relieve {}) ; input value signal, never backpressure the user 
-               (m/eduction (map (fn event->value [e] (parse (ref! (.-target e))))))
-               (m/reductions {} v-server))
+      (let [v (unparse (Control. (parse v) status))]
 
-          [status v :as state] (SyncController. (new >v))]
-; todo this is hoisted out, but what about focused logic? OOps?
-      (cond
-        (dom/Focused?. node) state
-        (= ::pending status) state
-        ;(= ::failed status) ?
-        ;(= ::init status) v-server
-        (= ::ok status) (do (ref! v-server) [::ok v-server]))))) ; concurrent edit, otherwise work-skipped
+        (reset! !status ::dirty)
+        (reset! !x (optimistic v))
+        (try
+          (case (e/server
+                  (let [dx (txn v)]
+                    (reset! !dx dx)
+                    (reset! hf/!tx-report (new (e/task->cp (transact! conn dx)))))) ; optional
+            (reset! !status ::synced)) ; caller can shadow based on transact! configuration
+          (catch Pending _
+            (reset! !status ::pending)) ; caller can shadow
+          (catch :default err
+            (reset! !status ::failed)
+            (reset! !err err)))
 
-(e/defn Checkbox
-  "[server bias]"
-  [checked-server status]
-  (e/client
-    (dom/input (dom/props {:type "checkbox"})
-      (let [[status v] (DOMInputController. dom/node "change" checked-server (partial -node-checked! dom/node))]
-        (dom/style {:outline (str "2px solid " (progress-color status))})
-        (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
-        v))))
+        #_!status ; hook to mark completed? is it needed? or is it branch by branch? does that imply a swap?
+        [status x dx err])))) ; monitor
 
-(e/defn Input [v-server status]
-  (e/client
-    (dom/input
-      (let [[status v] (DOMInputController. dom/node "input" v-server (partial -node-value! dom/node))]
-        (dom/style {:outline (str "2px solid " (progress-color status))})
-        (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
-        v))))
+(tests
+  (def edits [[::dirty {:task/status :done} [[:db/add '. :task/status :done]]]
+              [::dirty {:task/description "feed baby"} [[:db/add '. :task/description "feed baby"]]]
+              [::pending {} [[:db/add]]]
+              [::synced {} nil]
+              [::failed {} [[:db/add]] "rejected"]])
+  (transpose edits)
+  := [[::dirty ::dirty ::pending ::synced ::failed]
+      [#:task{:status :done} #:task{:description "feed baby"} {} {} {}]
+      [[[:db/add '. :task/status :done]]
+       [[:db/add '. :task/description "feed baby"]]
+       [[:db/add]] nil [[:db/add]]]
+      [nil nil nil nil "rejected"]])
+
+(defn squash-edits [edits]
+  (let [[statuses xs dxs errs] (transpose edits)]
+    [#_statuses
+     (apply merge xs)
+     (vec (apply concat dxs))
+     (seq (remove nil? errs))]))
+
+(tests
+  (squash-edits edits)
+  := [#:task{:status :done, :description "feed baby"}
+      [[:db/add '. :task/status :done]
+       [:db/add '. :task/description "feed baby"]
+       [:db/add] [:db/add]]
+      ["rejected"]])
+
+(tests
+  (squash-edits
+    [[::dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
+     [::dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]])
+  := [#:task{:status :done, :description "feed baby"}
+      [[:db/add '. :task/status :done] [:db/add '. :task/description "feed baby"]] nil])
+
+(tests
+  (group-by first edits)
+  := {::dirty [[::dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
+               [::dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]],
+      ::pending [[::pending {} [[:db/add]]]],
+      ::synced [[::synced {} nil]],
+      ::failed [[::failed {} [[:db/add]] "rejected"]]})
 
 #_
-(e/defn InputSubmit [v-server #_ body]
-  (e/client
-    (dom/input
-      (let [[status v] (DOMInputController. "input" v-server :keep-fn (partial ui4/?read-line! dom/node)
-                         (e/client (partial -node-value! dom/node)))]
-        (dom/style {:outline (str "2px solid " (progress-color status))})
-        v))))
+(e/defn Form [& edits]
+  (->> edits
+    (filter (fn [status _ _ _] (not= status)))
+  ; Take only the dirty changes
+  ; batch the txs
+  ; figure out the optimistic values
+  ; there are no errors
+    (squash-edits edits)))
+
+(defn aggregate-edits [edits]
+  (-> (group-by first edits)
+    (update-vals squash-edits)))
+
+(tests
+  (aggregate-edits edits)
+  := {::dirty [#:task{:status :done, :description "feed baby"}
+               [[:db/add '. :task/status :done]
+                [:db/add '. :task/description "feed baby"]]
+               nil],
+      ::pending [{} [[:db/add]] nil],
+      ::synced [{} [] nil],
+      ::failed [{} [[:db/add]] ["rejected"]]})
+
+(comment
+  (aggregate-edits
+    [::dirty {:task/status :done} [[:db/add . :task/status :done]]]
+    [::dirty {:task/description "feed baby"} [[:db/add . :task/description "feed baby"]]])
+  := {::dirty [{:task/status :done
+                :task/description "feed baby"}
+               [[:db/add . :task/status :done]
+                [:db/add . :task/description "feed baby"]]]})
+
+(e/defn DomInputController [node event-type v-server status ref!]
+  (let [v (new (->> (m/observe (fn [!] (dom-listener node event-type ! opts)))
+                 (m/relieve {}) ; input value signal, never backpressure the user
+                 (m/eduction (map (fn event->value [e] (parse (ref! (.-target e))))))
+                 (m/reductions {} v-server)))]
+    (cond
+      (dom/Focused?. node) v'
+      (= ::pending status) v'
+        ;(= ::failed status) ?
+        ;(= ::init status) v-server
+      (= ::ok status) (do (ref! v-server) v-server)))) ; concurrent edit, otherwise work-skipped
+
+(e/defn Checkbox [v status]
+  (dom/input (dom/props {:type "checkbox"})
+    (let [v' (DOMInputController. dom/node "change" v status
+               (partial dom/-node-checked! dom/node))]
+      (dom/style {:outline (str "2px solid " (progress-color status))})
+      (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
+      v')))
+
+(e/defn Input [v status]
+  (dom/input
+    (let [v' (DOMInputController. dom/node "input" v status
+               (partial dom/-node-value! dom/node))]
+      (dom/style {:outline (str "2px solid " (progress-color status))})
+      (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
+      v')))
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
@@ -97,8 +174,8 @@
     (when (seq local-promotions) ; these genesis records have now been promoted
       ; and now appear in the masterlist query, so stop tracking them locally.
       (swap! !pending-index #(apply dissoc % local-promotions))) ; "birth" - independent entity is no longer managed by the mother
-    
-    (let [vdv (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor 
+
+    (let [vdv (e/client (Popover. "open" ; todo PopoverBody - auto-open, no anchor
                           (e/fn Body' []
                             ; no point in updating the popover-local dbval here, as the popover is closing.
                             (e/server (with-genesis (e/snapshot hf/db) ; !!! todo make discrete
@@ -119,19 +196,15 @@
         ...server-cont)))) ; Ensure local entities here, they've been submitted
 
 (e/defn MasterList
-  "encapsulates both rendering the table and also adding elements to it, in 
+  "encapsulates both rendering the table and also adding elements to it, in
 order to stabilize identity"
-  [stable-kf server-records CreateForm EditForm] ; specifically not entities due to the optimism strategy
+  [stable-kf server-records EditForm CreateForm] ; specifically not entities due to the optimism strategy
   (e/client
-    (let [local-index (CreateController. stable-kf CreateForm)] ; todo discrete result
-      (e/server ; must not accidentally transfer local-index
-        (hf/branch
-          (For-by-streaming. stable-kf server-records (e/client local-index) ; matching pull shape
-            (e/fn [record]
-              (hf/branch
-                (EditForm. record)
-                ... hf/dx ...
-                ))))))))
+    (let [stage (CreateController. stable-kf CreateForm)] ; todo discrete result
+      (ui5/aggregate-edits
+        (e/server ; must not accidentally transfer local-index
+          (For-by-streaming. stable-kf server-records (e/client stage) ; matching pull shape
+            (EditForm. record)))))))
 
 ; does it need to branch each body and then collect and delegate to parent branch?
 

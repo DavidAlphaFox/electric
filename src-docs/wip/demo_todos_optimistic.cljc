@@ -1,16 +1,16 @@
 (ns wip.demo-todos-optimistic
   (:import [hyperfiddle.electric Pending])
-  (:require [contrib.identity :refer [tempid?]]
+  (:require [contrib.data :refer [merge-unordered]]
+            [contrib.debug :as dbg]
+            [contrib.identity :refer [tempid?]]
             #?(:clj [datomic.api :as d]) ; database on server
             [hyperfiddle.api :as hf]
             [hyperfiddle.electric :as e]
             [hyperfiddle.electric-dom2 :as dom]
+            [hyperfiddle.electric-data :refer [Cons$ Car Cdr]]
+            [hyperfiddle.electric-ui4 :as ui4]
+            [hyperfiddle.electric-ui5 :as ui5 :refer [CreateController MasterList Field]]
             [missionary.core :as m]
-            [hyperfiddle.electric-ui4 :as ui]
-            [hyperfiddle.electric-ui5 :as ui5 :refer [CreateController MasterList]]
-            [contrib.data :refer [merge-unordered]]
-            [contrib.debug :as dbg]
-            [hyperfiddle.api :as hf]
             [wip.demo-datomic-helpers :refer [Latency FailRate transact! db tx-report]]))
 
 #?(:clj
@@ -33,85 +33,84 @@
 (e/defn TodoItem [{:keys [db/id] :as ?record}] ; pre-pulled, todo entity api
   (e/client
     (dom/div (dom/style {:display "flex", :align-items "center"})
-      
-      ; div must concat two vdvs
-      ; and the dv component must propagate in parallel on both client and server
-      
-      (e/server
-        
+      (ui5/aggregate-edits
+        ; single optimistic document, multiple txns?
+        ; send up the best possible viewstate
         (ui5/Field.
-          :record ?record ; should be lazy loaded - entity api. This is over-fetched. Thereby ensure right here?
-          :a :task/status
+          :record (get ?record :task/status) ; todo entity api
           :Control ui5/Checkbox
           :parse {:done true, :active false}
           :unparse {true :done, false :active}
+          :optimistic (fn [v] {:db/id (:db/id ?record) :task/status x})
           :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
-        
         (ui5/Field.
-          :record ?record
-          :a :task/description
+          :record  (get ?record :task/description)
           :Control ui5/Input
           :parse identity
           :unparse identity
+          :optimistic (fn [v] ...)
           :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))))
 
-(e/defn TodoItemCreate "just another form, the caller will branch and deal with genesis 
+(e/defn TodoItemCreate "just another form, the caller will branch and deal with genesis
 on submit"
   []
-  ; its a colored input but perhaps we suppress the styles as the popover is inlined?
-  ; This input has no colors actually due to being a glorified popover submit button?
-  (e/server
-    (ui5/Field. ; local optimistic updates via side channel on client
-      :record (e/server {})
-      :a :task/description
-      :Control ui5/Input ; todo esc to revert
-; how can Submit be wired directly to commit-stage in DT? 
-      :parse identity
-      :unparse identity
-      
-      :optimistic (fn [v] {:task/description v
-                           :task/status :active
-                           :task/order (e/server (swap! !order-id inc))})
-      :txn (fn [v] [[:db/add ?x :task/description v] ; no ID yet! Cannot transact, have local view repr only
-                    [:db/add ?x :task/status :active]
-                    [:db/add ?x :task/order (e/server (swap! !order-id inc))]])
-      (dom/props {:placeholder "Buy milk"})))
-  #_(e/client v'-client) ; return optimistic client value as local-index for the masterlist
-  )
+  (dam ; divert signal to local dirty atom until submit
+    (ui5/aggregate-edits
+      (ui5/Field.
+        :record (e/server {:task/description nil})
+        :Control ui5/Input ; todo esc to revert
+; how can Submit be wired directly to commit-stage in DT?
+        :parse identity
+        :unparse identity
+        :optimistic (fn [v] {:task/description v
+                             :task/status :active
+                             :task/order next-order-id})
+        :txn (fn [v] [[:db/add ?x :task/description v] ; no ID yet! Cannot transact, have local view repr only
+                      [:db/add ?x :task/status :active]
+                      [:db/add ?x :task/order next-order-id]])
+      ; on submit, latch branch
+        (dom/props {:placeholder "Buy milk"})))))
 
 (e/defn Page []
   (e/client
-    (dom/h1 (dom/text "advanced todo list with optimistic render and fail/retry"))
-    (dom/p (dom/text "it's multiplayer, try two tabs"))
-    (dom/div (dom/props {:class "todo-list"})
-      #_(dom/div {:class "todo-items"})
-      (e/server 
-        (let [stable-kf (contrib.identity/Entity-id-locally-stabilzied!. hf/tx-report)]
-          ; returns xdx by side channel
-          (MasterList. stable-kf (todo-records hf/db)
-            TodoItem TodoItemCreate #_{:task/status :active})))
-      (dom/p (dom/props {:class "counter"})
-        (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))
-        (dom/text " items left")))))
+    (let [!return (atom nil)]
+      (dom/h1 (dom/text "advanced todo list with optimistic render and fail/retry"))
+      (dom/p (dom/text "it's multiplayer, try two tabs"))
+      (dom/div (dom/props {:class "todo-list"})
+        #_(dom/div {:class "todo-items"})
+
+        (reset! !return
+          (let [stable-kf (contrib.identity/Entity-id-locally-stabilzied!. hf/tx-report)]
+            (MasterList. stable-kf (e/server (todo-records hf/db))
+              TodoItem TodoItemCreate #_{:task/status :active})))
+
+        (dom/p (dom/props {:class "counter"})
+          (dom/span (dom/props {:class "count"}) (dom/text (e/server (todo-count hf/db))))
+          (dom/text " items left")))
+      (e/watch !return)))) ; accidental transfer
 
 (e/defn AdvancedTodoList []
   (e/server
-    (binding [hf/db (e/watch !db)
-              hf/into-tx' hf/into-tx ; datomic specific into-tx
-              hf/with (fn [db tx] ; inject datomic dependency
-                        (try (new (e/task->cp (transact! db tx)))
-                          (catch Exception e  (println "...failure, e: " e) db)))]
+    (binding [hf/tx-report (e/watch !tx-report)
+              hf/db (:db-after hf/tx-report)]
       (e/client
         (Latency. 300 2000)
         (FailRate. 3 10))
-      (let [[status x] (hf/branch ; how can it return xdx? use parent branch ha
-                         (Page.)
-                         (hf/Transact!. hf/dx) ; does it clear or work skip or what?
-                         (e/client
-                           (dom/hr)
-                           (dom/element "style" (str "." (css-slugify `staged) " { display: block; width: 100%; height: 10em; }"))
-                           (ui/edn hf/x nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))
-                           (ui/edn (e/server hf/dx) nil (dom/props {::dom/disabled true ::dom/class (css-slugify `staged)}))))]))))
+
+      (let [{:keys [::dirty] :as edits} (Page.)] ; accidental transfer
+        (reset! !tx-report
+          (try
+            (e/server
+              (new (e/task->cp (transact! conn dirty #_(Cdr. stage))))
+              ...notify-completion)
+            (catch Pending _
+              ...notify-pending)
+            (catch Exception e
+              ...notify-failure)))
+
+        (e/client
+          (dom/hr)
+          (ui4/edn edits nil (dom/props {:disabled true :class (css-slugify `staged)})))))))
 
 ; Pending things show up in this list. And then what?
 ; vdv shows up
@@ -120,5 +119,5 @@ on submit"
 
 
 ; The big problem is that return values are colored which means they don't flow
-; out naturally, they ping pong all the way out. Because of a syntax ambiguity 
+; out naturally, they ping pong all the way out. Because of a syntax ambiguity
 ; in Clojure. Thus we use the hf/branch call convention to invert control.

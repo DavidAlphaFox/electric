@@ -111,13 +111,3 @@ on submit"
         (e/client
           (dom/hr)
           (ui4/edn edits nil (dom/props {:disabled true :class (css-slugify `staged)})))))))
-
-; Pending things show up in this list. And then what?
-; vdv shows up
-; should the status show up?
-; should the projected view show up?
-
-
-; The big problem is that return values are colored which means they don't flow
-; out naturally, they ping pong all the way out. Because of a syntax ambiguity
-; in Clojure. Thus we use the hf/branch call convention to invert control.

@@ -129,13 +129,3 @@ order to stabilize identity"
         (e/server ; must not accidentally transfer local-index
           (For-by-streaming. stable-kf server-records (e/client stage) ; matching pull shape
             (EditForm. record)))))))
-
-; does it need to branch each body and then collect and delegate to parent branch?
-
-; client - collect hf/x
-; server - collect hf/dx
-; theres a 1:N due to the e/for
-
-; hf/branch is as common as reutrning values, then. it's just a call convention
-; hf/branchN ?
-; how do you do it in CT? mount/unmount?

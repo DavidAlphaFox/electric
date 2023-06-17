@@ -58,12 +58,3 @@
       ::pending [{} [[:db/add]] nil],
       ::synced [{} [] nil],
       ::failed [{} [[:db/add]] ["rejected"]]})
-
-(comment
-  (aggregate-edits
-    [::dirty {:task/status :done} [[:db/add . :task/status :done]]]
-    [::dirty {:task/description "feed baby"} [[:db/add . :task/description "feed baby"]]])
-  := {::dirty [{:task/status :done
-                :task/description "feed baby"}
-               [[:db/add . :task/status :done]
-                [:db/add . :task/description "feed baby"]]]})

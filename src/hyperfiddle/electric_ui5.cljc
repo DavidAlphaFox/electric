@@ -12,6 +12,7 @@
             [hyperfiddle.electric-ui4 :as ui4]
             [hyperfiddle.electric-data :refer [Triple First Second Third]]
             [hyperfiddle.rcf :refer [tests tap % with]]
+            [hyperfiddle.stage :refer [aggregate-edits]]
             [missionary.core :as m]))
 
 (e/defn On-input-submit [node]
@@ -50,83 +51,6 @@
 
         #_!status ; hook to mark completed? is it needed? or is it branch by branch? does that imply a swap?
         [status x dx err])))) ; monitor
-
-(tests
-  (def edits [[::dirty {:task/status :done} [[:db/add '. :task/status :done]]]
-              [::dirty {:task/description "feed baby"} [[:db/add '. :task/description "feed baby"]]]
-              [::pending {} [[:db/add]]]
-              [::synced {} nil]
-              [::failed {} [[:db/add]] "rejected"]])
-  (transpose edits)
-  := [[::dirty ::dirty ::pending ::synced ::failed]
-      [#:task{:status :done} #:task{:description "feed baby"} {} {} {}]
-      [[[:db/add '. :task/status :done]]
-       [[:db/add '. :task/description "feed baby"]]
-       [[:db/add]] nil [[:db/add]]]
-      [nil nil nil nil "rejected"]])
-
-(defn squash-edits [edits]
-  (let [[statuses xs dxs errs] (transpose edits)]
-    [#_statuses
-     (apply merge xs)
-     (vec (apply concat dxs))
-     (seq (remove nil? errs))]))
-
-(tests
-  (squash-edits edits)
-  := [#:task{:status :done, :description "feed baby"}
-      [[:db/add '. :task/status :done]
-       [:db/add '. :task/description "feed baby"]
-       [:db/add] [:db/add]]
-      ["rejected"]])
-
-(tests
-  (squash-edits
-    [[::dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
-     [::dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]])
-  := [#:task{:status :done, :description "feed baby"}
-      [[:db/add '. :task/status :done] [:db/add '. :task/description "feed baby"]] nil])
-
-(tests
-  (group-by first edits)
-  := {::dirty [[::dirty #:task{:status :done} [[:db/add '. :task/status :done]]]
-               [::dirty #:task{:description "feed baby"} [[:db/add '. :task/description "feed baby"]]]],
-      ::pending [[::pending {} [[:db/add]]]],
-      ::synced [[::synced {} nil]],
-      ::failed [[::failed {} [[:db/add]] "rejected"]]})
-
-#_
-(e/defn Form [& edits]
-  (->> edits
-    (filter (fn [status _ _ _] (not= status)))
-  ; Take only the dirty changes
-  ; batch the txs
-  ; figure out the optimistic values
-  ; there are no errors
-    (squash-edits edits)))
-
-(defn aggregate-edits [edits]
-  (-> (group-by first edits)
-    (update-vals squash-edits)))
-
-(tests
-  (aggregate-edits edits)
-  := {::dirty [#:task{:status :done, :description "feed baby"}
-               [[:db/add '. :task/status :done]
-                [:db/add '. :task/description "feed baby"]]
-               nil],
-      ::pending [{} [[:db/add]] nil],
-      ::synced [{} [] nil],
-      ::failed [{} [[:db/add]] ["rejected"]]})
-
-(comment
-  (aggregate-edits
-    [::dirty {:task/status :done} [[:db/add . :task/status :done]]]
-    [::dirty {:task/description "feed baby"} [[:db/add . :task/description "feed baby"]]])
-  := {::dirty [{:task/status :done
-                :task/description "feed baby"}
-               [[:db/add . :task/status :done]
-                [:db/add . :task/description "feed baby"]]]})
 
 (e/defn DomInputController [node event-type v-server status ref!]
   (let [v (new (->> (m/observe (fn [!] (dom-listener node event-type ! opts)))
@@ -201,7 +125,7 @@ order to stabilize identity"
   [stable-kf server-records EditForm CreateForm] ; specifically not entities due to the optimism strategy
   (e/client
     (let [stage (CreateController. stable-kf CreateForm)] ; todo discrete result
-      (ui5/aggregate-edits
+      (aggregate-edits
         (e/server ; must not accidentally transfer local-index
           (For-by-streaming. stable-kf server-records (e/client stage) ; matching pull shape
             (EditForm. record)))))))

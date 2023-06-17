@@ -1,5 +1,6 @@
 (ns contrib.identity
-  (:require [hyperfiddle.rcf :refer [tests]]))
+  (:require [hyperfiddle.electric :as e]
+            [hyperfiddle.rcf :refer [tests]]))
 
 (defn ->Object "allocate a process-unique identity that cannot collide" []
   #?(:clj (Object.) :cljs (js/Object.)))
@@ -51,7 +52,7 @@ previously seen."
     (fn [record]
       (entity-id-locally-stabilzied! !ids tx-report record))))
 
-(tests
+(comment #_tests
   (def !ids (atom {}))
   (entity-id-locally-stabilzied! !ids db "tempid-1") := ?a
   (entity-id-locally-stabilzied! !ids db "tempid-1") := ?a

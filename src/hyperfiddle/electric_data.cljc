@@ -17,16 +17,16 @@
 ;;   First x => (print x)
 ;;   Second x => (print x)
 
-(e/defn Tuple [x y] ; access x while y is pending
+(e/defn Cons$ [x y] ; access x while y is pending
   (e/fn [Getter] (Getter. x y)))
 
-(e/defn First [Data]
+(e/defn Car [Data]
   (Data. (e/fn [x y] x)))
 
-(e/defn Second [Data]
+(e/defn Cdr [Data]
   (Data. (e/fn [x y] y)))
 
-(First. (Tuple. (e/client 1) (e/server 2))) := 2
+;(First. (Tuple. (e/client 1) (e/server 2))) := 2
 
 ; ---
 

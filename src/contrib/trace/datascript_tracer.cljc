@@ -28,7 +28,7 @@
 (defn textify [v] (cond (nil? v) "nil"
                         (instance? Pending v) "⌛"
                         (instance? #?(:clj Throwable :cljs js/Error) v) (ex-message v)
-                        :else v))
+                        :else (apply str (take 20 (pr-str v)))))
 
 (defn default-point-id [id parent] (crypt/sha256-base64 [id parent]))
 (defn ->default-trace-id []

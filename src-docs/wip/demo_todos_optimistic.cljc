@@ -11,9 +11,9 @@
             [hyperfiddle.electric-data :refer [Cons$ Car Cdr]]
             [hyperfiddle.electric-ui4 :as ui4]
             [hyperfiddle.electric-ui5 :as ui5 :refer [CreateController MasterList Field]]
-            [hyperfiddle.stage :refer [aggregate-edits]]
+            [hyperfiddle.stage :refer [aggregate-edits promote-edits]]
             [missionary.core :as m]
-            [wip.demo-datomic-helpers :refer [Latency FailRate transact! db tx-report]]))
+            [wip.demo-datomic-helpers :refer [Latency FailRate slow-transact! db tx-report]]))
 
 #?(:clj
    (def schema
@@ -93,6 +93,21 @@ on submit"
           (dom/text " items left")))
       (e/watch !return)))) ; accidental transfer
 
+(defn transact!_ [<edits]
+  ; do this in discrete time, these effects must not be interrupted.
+  ; correlate the dirty-txn with the tx-report; is edits = tx-report?
+  (m/ap
+    (let [{:keys [::hf/dirty] :as edits} (m/?> <edits)] ; non-preemptive
+      (m/amb ; progressive states must be shown to user
+        [tx-report
+         (promote-edits edits dirty ::hf/pending)]
+        (try
+          [(m/? (slow-transact! conn dirty))
+           (promote-edits edits dirty ::hf/synced)]
+          (catch Exception e
+            [tx-report
+             (promote-edits edits dirty ::hf/failed)]))))))
+
 (e/defn AdvancedTodoList []
   (e/server
     (binding [hf/tx-report (e/watch !tx-report)
@@ -101,21 +116,12 @@ on submit"
         (Latency. 300 2000)
         (FailRate. 3 10))
 
-      (let [{:keys [::hf/dirty] :as edits} (Page.)] ; accidental transfer
-
-
-        (try
-          (e/server
-            (reset! !tx-report
-              ; can correlate the dirty-txn with the tx-report here
-              ; promote dirty edits to pending while await the tx-report
-              (promote! dirty ::hf/pending) ; add them to local queries
-              ; we need a special tx-report which understands ::hf/pending ?
-              (case (new (e/task->cp (transact! conn dirty #_(Cdr. stage))))
-                (promote! dirty ::hf/synced))))
-          (catch Pending _) ; can it even happen?
-          (catch Exception e (promote! dirty ::hf/failed)))
-
+      (let [edits (Page.)] ; accidental transfer
+        (e/server
+          (reset! !tx-report
+            ; a stream of progress reports, not just final reports
+            (transact!_ (e/fn [] edits))))
+        
         (e/client
           (dom/hr)
           (ui4/edn edits nil (dom/props {:disabled true :class (css-slugify `staged)})))))))

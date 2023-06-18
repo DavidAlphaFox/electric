@@ -60,7 +60,7 @@
     (ui/range fail-rate (e/fn [v] (e/server (reset! !fail-rate v)))
       (dom/props {:min min, :max max, :style {:width "200px"}}))))
 
-#?(:clj (defn transact! "tx with configured latency and fail rate" [db tx]
+#?(:clj (defn slow-transact! "tx with configured latency and fail rate" [db tx]
           (m/sp
             (m/? (m/sleep @!latency))
             (if (< (rand-int 10) @!fail-rate)

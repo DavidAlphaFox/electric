@@ -522,3 +522,17 @@ fresh event."
             (catch ~(if (:ns &env) :default `Throwable) ex#
               (reduced (reset! !state# [::failed ex#]))))) ; latch result
      (hyperfiddle.electric/watch !state#)))
+
+(defn reconcile [kf <xs])
+
+(hyperfiddle.electric/defn For-by-streaming
+  [stable-kf Branch >server-diffs >client-diffs]
+  ; operate on records because datomic-entity api has broken equality
+  (let [#_#_records (merge-unordered stable-kf genesis-records server-records)]
+    (e/client
+      (e/for-by stable-kf [record client-records] ; must have matching pull shape
+        (Branch. record)))
+    ; todo unify into one for-by to fix unintentional reboot on birth
+    (e/server
+      (e/for-by stable-kf [record server-records]
+        (Branch. record)))))

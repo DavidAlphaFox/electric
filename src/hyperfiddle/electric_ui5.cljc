@@ -5,6 +5,7 @@
             [contrib.data :refer [transpose index-by]]
             [contrib.debug :as dbg]
             [contrib.identity :refer [tempid?]]
+            [contrib.missionary-contrib :as mx]
             contrib.str
             [hyperfiddle.api :as hf]
             [hyperfiddle.electric :as e]
@@ -14,6 +15,9 @@
             [hyperfiddle.rcf :refer [tests tap % with]]
             [hyperfiddle.stage :refer [aggregate-edits]]
             [missionary.core :as m]))
+
+(def !tx-report)
+(e/def >tx-report)
 
 (e/defn On-input-submit [node]
   ; (assert node is type input)
@@ -41,7 +45,8 @@
           (case (e/server
                   (let [dx (txn v)]
                     (reset! !dx dx)
-                    (reset! hf/!tx-report (new (e/task->cp (transact! conn dx)))))) ; optional
+                    ; where do we branch the tx-report binding? Popover?
+                    #_(!tx-report (new (e/task->cp (transact! conn dx)))))) ; optional
             (reset! !status ::synced)) ; caller can shadow based on transact! configuration
           (catch Pending _
             (reset! !status ::pending)) ; caller can shadow
@@ -95,42 +100,44 @@
     (update-in edits [::hf/dirty] (fn [[x dx]] [(x id) (dx id)])))) ; see TodoItemCreate
 
 (e/defn CreateController
-  "maintains a local index of created entities by watching the Datomic tx-report"
+  "maintains an index of locally created entities by watching the Datomic tx-report"
   [kf Form #_&args]
-  (let [!genesis-edits-index (atom {}), genesis-edits-index (e/watch !genesis-edits-index) ; perhaps global to the client, is it a datascript db?
-        genesis-tempids (keys genesis-edits-index)
-        birthed-tempids (vals (:ids->tempids >tx-report))] ; includes those from other sessions
-
-    (when-some [local-births (seq (clojure.set/intersection birthed-tempids
-                                    genesis-tempids))]
-      ; "Birthed" entities now appear in the masterlist query, so the entity
-      ; is now independent, i.e. no longer managed by its mother.
-      (swap! !genesis-edits-index #(apply dissoc % local-births)))
-
-    ; Popover diverts the form signal to local dirty atom until submit
-    (let [{[x dx] ::hf/dirty :as edits} (with-genesis hf/db
-                                          (Popover. "open" Form))] ; pending until commit
-      (swap! !genesis-edits-index assoc (kf x) edits) ; discrete!
-      (vals genesis-edits-index))))
-
-(e/defn For-by-streaming [stable-kf server-records genesis-records Branch]
-  ; operate on records because datomic-entity api has broken equality
-  (let [#_#_records (merge-unordered stable-kf genesis-records server-records)]
-    (e/client
-      (e/for-by stable-kf [record genesis-records] ; must have matching pull shape
-        (Branch. record)))
-    ; todo unify into one for-by to fix unintentional reboot on birth
-    (e/server
-      (e/for-by stable-kf [record server-records]
-        (Branch. record)))))
+  (let [>edit (Popover. "open" Form) ; pending until commit
+        !genesis-edits-index (m/mbx {})
+        >genesis-edits-index (m/stream (mx/poll-task !genesis-edits-index))]
+    
+    (new ; monitor genesis
+      (m/ap
+        (let [{[x] ::hf/dirty :as edit} (with-genesis hf/db (m/?< >edit))]
+          (!genesis-edits-index (assoc genesis-edits-index (kf x) edit)))))
+    
+    (new ; monitor birth
+      (m/ap
+        (let [genesis-edits-index (m/?< >genesis-edits-index)
+              genesis-tempids (keys genesis-edits-index)
+              birthed-tempids (vals (:ids->tempids (m/?> >tx-report)))] ; non-preemptive
+          
+          (when-some [local-births (seq (clojure.set/intersection birthed-tempids
+                                          genesis-tempids))]
+            ; "Birthed" entities are no longer managed by their mother.
+            (!genesis-edits-index (apply dissoc genesis-edits-index local-births))))))
+    
+    (m/zip vals >genesis-edits-index)))
 
 (e/defn MasterList
-  "encapsulates both rendering the table and also adding elements to it, in
-order to stabilize identity"
-  [stable-kf server-records EditForm CreateForm] ; specifically not entities due to the optimism strategy
-  (e/client
-    (let [{:keys [::hf/dirty ::hf/pending]} (CreateController. stable-kf CreateForm)]
-      (apply aggregate-edits dirty
-        (e/server ; accidental transfer
-          (For-by-streaming. stable-kf server-records pending
-            (EditForm. record)))))))
+  "coordinates the insertion of new entities into a database-backed editable list
+so as to stabilize the entity's associated Electric frame as the entity progresses 
+through its edit lifecycle (dirty -> pending -> completed)."
+  [stable-kf EditForm CreateForm]
+  (e/server
+    (e/fn [records] ; e/fn transfer
+      (e/client
+        (let [>genesis-edits (CreateController. stable-kf CreateForm)
+              >query-diffs (e/server (e/reconcile stable-kf (e/fn [] records))) ; check transfer
+              >local-pending-diffs (m/ap (edit->diff (::hf/pending (m/?> >genesis-edits))))
+              >local-dirty-edits (m/ap (::hf/dirty (m/?> >genesis-edits)))]
+          
+          ; Note: when the dirty record becomes pending, and we edit further, 
+          ; it's the same edit structure
+          (apply aggregate-edits (new >local-dirty-edits)
+            (e/For-by-streaming. stable-kf EditForm >query-diffs >local-pending-diffs)))))))

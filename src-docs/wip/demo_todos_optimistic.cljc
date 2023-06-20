@@ -73,7 +73,6 @@ on submit"
     :txn (fn [v] (fn [e] [[:db/add e :task/description v]
                           [:db/add e :task/status :active]
                           [:db/add e :task/order next-order-id]]))
-      ; on submit, latch branch
     (dom/props {:placeholder "Buy milk"})))
 
 (e/defn Page []

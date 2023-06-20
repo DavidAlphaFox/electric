@@ -19,12 +19,6 @@
 (def !tx-report)
 (e/def >tx-report)
 
-(e/defn On-input-submit [node]
-  ; (assert node is type input)
-  (new (m/reductions {} nil
-         (m/observe (fn [!] (e/dom-listener node "keydown"
-                              #(some-> (ui4/?read-line! node %) !)))))))
-
 (defn progress-color [state]
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
 

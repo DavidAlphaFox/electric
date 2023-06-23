@@ -95,10 +95,10 @@ on submit"
 
 (e/defn AdvancedTodoList []
   (e/server
-    (bindx [ui5/!tx-report (m/mbx nil)
+    (bindx [ui5/!tx-report (atom nil)
             
-            ; some views need to see all tempid promotions
-            ui5/>tx-report (m/stream (mx/poll-task ui5/!tx-report))
+            ; guarantee views can see each tx-report if needed
+            ui5/>tx-report (m/stream (m/watch !tx-report))
             
             ; most views just want latest
             hf/db (:db-after (new (m/relieve {}
@@ -109,10 +109,20 @@ on submit"
         (Latency. 300 2000)
         (FailRate. 3 10))
 
-      (let [edits (new (m/relieve {} (Page.)))] ; accidental transfer
+      (let [edits (Page.)] ; accidental transfer
         (e/server
-          (new (m/ap (m/amb nil (ui5/!tx-report (m/?< (transact!_ (e/fn [] edits))))))))
+          (new (m/ap
+                 (let [tx-report (m/?< ui5/>tx-report)]
+                   (reset! ui5/!tx-report
+                     (m/?< (transact!_ tx-report (e/fn [] edits))))))))
 
         (e/client
           (dom/hr)
           (ui4/edn edits nil (dom/props {:disabled true :class (css-slugify `staged)})))))))
+
+; do pending txns need to be kept separate?
+; YES, because they stay in the stage until they are completed
+; but we don't want to transact them N times!
+
+; edits are isolated unless userland explicitly batches with a relieve?
+; e.g. a popover?

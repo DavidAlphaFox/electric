@@ -297,20 +297,22 @@
 
 (tests )
 
+; In Google Sheets mode, transactions are isolated and race.
+; In CRUD mode, popovers are introduced to manage batching.
 
-(defn transact!_ [<edits]
-  ; do this in discrete time, these effects must not be interrupted.
-  ; correlate the dirty-txn with the tx-report; is edits = tx-report?
+; are they isolated or should we batch them here?
+; the popover merges them; this is parallel edits.
+; By the time they are seen here they are already batched
+; which means there is only ever one edit in this list
+; if there are two it means the system is lagging or the user
+; is a robot and can type in multiple widgets simultaneously, or
+; faster than the system's sampling rate
+
+(defn transact!_ [old-tx-report <txs] ; Flow (List Tx)
   (m/ap
-    (let [{:keys [::hf/dirty] :as edits} (m/?> <edits)] ; non-preemptive
-      (m/amb ; progressive states must be shown to user
-        (-> tx-report #_(assoc ::pending dirty)) ; not even needed
-        #_[tx-report (promote-edits edits dirty ::hf/pending)]
-        (try
-          (assoc (m/? (slow-transact! conn dirty))
-            ::completed (hash dirty))
-          #_[(m/? (slow-transact! conn dirty))
-             (promote-edits edits dirty ::hf/synced)]
-          (catch Exception e
-            (assoc tx-report ::failed dirty)
-            #_[tx-report (promote-edits edits dirty ::hf/failed)]))))))
+    (let [tx (m/?> ##Inf (m/seed (m/?< <txs)))] ; race them
+      (try
+        (let [tx-report (m/? (slow-transact! conn dirty))]
+          (assoc tx-report ::completed tx))
+        (catch Exception e
+          (assoc old-tx-report ::rejected tx))))))

@@ -24,7 +24,7 @@
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
 
 (e/defn Field ; client bias, bias is v. delicate
-  "returns a signal of [state edit]"
+  "returns a signal of [viewstate tx]"
   [{:keys [v Control parse unparse txn] #_[status]
     :or {txn identity}}]
   (e/client
@@ -94,22 +94,24 @@
   (let [id (contrib.identity/genesis-tempid! db)]
     [(?x id) (?dx id)])) ; see TodoItemCreate
 
-(defn monitor-genesis! [!genesis >genesis stable-kf x]
+(defn monitor-genesis! [!genesis stable-kf x]
   (m/ap
     (let [e (stable-kf x)]
-      (!genesis (conj (m/?< >genesis) e))
+      (swap! !genesis conj e)
       [:assoc e x])))
 
 (defn monitor-birth! [!genesis >genesis stable-kf >tx-report]
   (m/ap
-    (let [birthed-tempids (vals (:ids->tempids (m/?< >tx-report)))]
+    (let [birthed-tempids (promoted-tempids (m/?< >tx-report))]
       (when-some [local-births (seq (intersection birthed-tempids (m/?< >genesis)))]
         ; "Birthed" entities are no longer managed by their mother.
         (m/seed
           (for [e local-births]
             (let [e (stable-kf e DISPOSE)]
-              (!genesis (disj (m/?< >genesis)) e)
+              (swap! !genesis disj e)
               [:dissoc e]))))))) ; is the dissoc even needed? Make e/reconcile idempotent
+
+(defn promoted-tempids [tx-report] (vals (:ids->tempids tx-report)))
 
 (e/defn CreateController
   "maintains an index of locally created entities by watching the Datomic tx-report"
@@ -125,9 +127,9 @@
   (let [[x dx] (e/snapshot ; popover could reopen, prevent bad things, fixme
                  (with-genesis hf/db
                    (Popover. "open" Form))) ; pending until commit
-        !genesis (m/mbx #{}) >genesis (m/stream (mx/poll-task !genesis))]
+        !genesis (atom #{}) >genesis (m/stream (m/watch !genesis))]
     [(mx/mix ; discrete diffs for e/par
-       (monitor-genesis! !genesis >genesis stable-kf x)
+       (monitor-genesis! !genesis stable-kf x)
        (monitor-birth! !genesis >genesis stable-kf >tx-report))
      dx])) ; txn - send up, it's a signal due to relieving backpressure of the user
 
@@ -140,11 +142,13 @@ through its edit lifecycle (dirty -> pending -> completed)."
     (e/fn [records] ; e/fn transfer
       (e/client
         (let [[>pending-view-diffs dx] (CreateController. stable-kf CreateForm)]
-          (apply aggregate-edits dx
-            (maintain-vec
-              (e/par EditForm
-                (mx/mix >pending-view-diffs
-                  (e/server (e/reconcile stable-kf (e/fn [] records)))))))))))) ; illegal flow transfer
+          (vector ; isolated txs that race in parallel unless a popover batches them
+            dx #_x ; x is local now?
+            (map second ; just the dxs for now, throw away the view state
+              (maintain-vec
+                (e/par EditForm
+                  (mx/mix >pending-view-diffs
+                    (e/server (e/reconcile stable-kf (e/fn [] records))))))))))))) ; illegal flow transfer
             
 ; send transaction up (in any state? dirty/pending is there a difference?)
 ; wire pending state into for-by-streaming, diffed

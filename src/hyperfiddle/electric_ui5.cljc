@@ -2,6 +2,7 @@
   #?(:cljs (:require-macros hyperfiddle.electric-ui5))
   (:refer-clojure :exclude [long double keyword symbol uuid range])
   (:require clojure.edn
+            [clojure.set :refer [intersection]]
             [contrib.data :refer [transpose index-by]]
             [contrib.debug :as dbg]
             [contrib.identity :refer [tempid?]]
@@ -23,6 +24,7 @@
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
 
 (e/defn Field ; client bias, bias is v. delicate
+  "returns a signal of [state edit]"
   [{:keys [v Control parse unparse txn] #_[status]
     :or {txn identity}}]
   (e/client
@@ -49,7 +51,8 @@
             (reset! !err err)))
 
         #_!status ; hook to mark completed? is it needed? or is it branch by branch? does that imply a swap?
-        [status x dx err])))) ; monitor
+        #_[status x dx err]; monitor
+        [x dx]))))
 
 (e/defn DomInputController [node event-type v-server status ref!]
   (let [v (new (->> (m/observe (fn [!] (dom-listener node event-type ! opts)))
@@ -87,36 +90,46 @@
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
-(defn with-genesis [db {[x dx] ::hf/dirty :as edits}]
+(defn with-genesis [db [?x ?dx]]
   (let [id (contrib.identity/genesis-tempid! db)]
-    ; do we have a txn now?
-    ; how does this edit flow through the masterlist to the top?
-    (update-in edits [::hf/dirty] (fn [[x dx]] [(x id) (dx id)])))) ; see TodoItemCreate
+    [(?x id) (?dx id)])) ; see TodoItemCreate
+
+(defn monitor-genesis! [!genesis >genesis stable-kf x]
+  (m/ap
+    (let [e (stable-kf x)]
+      (!genesis (conj (m/?< >genesis) e))
+      [:assoc e x])))
+
+(defn monitor-birth! [!genesis >genesis stable-kf >tx-report]
+  (m/ap
+    (let [birthed-tempids (vals (:ids->tempids (m/?< >tx-report)))]
+      (when-some [local-births (seq (intersection birthed-tempids (m/?< >genesis)))]
+        ; "Birthed" entities are no longer managed by their mother.
+        (m/seed
+          (for [e local-births]
+            (let [e (stable-kf e DISPOSE)]
+              (!genesis (disj (m/?< >genesis)) e)
+              [:dissoc e]))))))) ; is the dissoc even needed? Make e/reconcile idempotent
 
 (e/defn CreateController
   "maintains an index of locally created entities by watching the Datomic tx-report"
-  [kf Form #_&args]
-  (let [>edit (Popover. "open" Form) ; pending until commit
-        !genesis-edits-index (m/mbx {})
-        >genesis-edits-index (m/stream (mx/poll-task !genesis-edits-index))]
-    
-    (new ; monitor genesis
-      (m/ap
-        (let [{[x] ::hf/dirty :as edit} (with-genesis hf/db (m/?< >edit))]
-          (!genesis-edits-index (assoc genesis-edits-index (kf x) edit)))))
-    
-    (new ; monitor birth
-      (m/ap
-        (let [genesis-edits-index (m/?< >genesis-edits-index)
-              genesis-tempids (keys genesis-edits-index)
-              birthed-tempids (vals (:ids->tempids (m/?> >tx-report)))] ; non-preemptive
-          
-          (when-some [local-births (seq (clojure.set/intersection birthed-tempids
-                                          genesis-tempids))]
-            ; "Birthed" entities are no longer managed by their mother.
-            (!genesis-edits-index (apply dissoc genesis-edits-index local-births))))))
-    
-    (m/zip vals >genesis-edits-index)))
+  [stable-kf Form #_&args]
+  
+  ; are we watching for tempids, or really for tx completion?
+  ; Note, txns are concurrent and can overlap tempids!!
+  ; don't track births, track txn completion by hash of txn.
+  ; todo: enhance tx-report with the hash of txns that completed
+  ;    so that they can be moved from the for? -- possible issue
+  
+  ; tx backpressure has been relieved, it's unlike to change
+  (let [[x dx] (e/snapshot ; popover could reopen, prevent bad things, fixme
+                 (with-genesis hf/db
+                   (Popover. "open" Form))) ; pending until commit
+        !genesis (m/mbx #{}) >genesis (m/stream (mx/poll-task !genesis))]
+    [(mx/mix ; discrete diffs for e/par
+       (monitor-genesis! !genesis >genesis stable-kf x)
+       (monitor-birth! !genesis >genesis stable-kf >tx-report))
+     dx])) ; txn - send up, it's a signal due to relieving backpressure of the user
 
 (e/defn MasterList
   "coordinates the insertion of new entities into a database-backed editable list
@@ -126,12 +139,17 @@ through its edit lifecycle (dirty -> pending -> completed)."
   (e/server
     (e/fn [records] ; e/fn transfer
       (e/client
-        (let [>genesis-edits (CreateController. stable-kf CreateForm)
-              >query-diffs (e/server (e/reconcile stable-kf (e/fn [] records))) ; check transfer
-              >local-pending-diffs (m/ap (edit->diff (::hf/pending (m/?> >genesis-edits))))
-              >local-dirty-edits (m/ap (::hf/dirty (m/?> >genesis-edits)))]
-          
-          ; Note: when the dirty record becomes pending, and we edit further, 
-          ; it's the same edit structure
-          (apply aggregate-edits (new >local-dirty-edits)
-            (e/For-by-streaming. stable-kf EditForm >query-diffs >local-pending-diffs)))))))
+        (let [[>pending-view-diffs dx] (CreateController. stable-kf CreateForm)]
+          (apply aggregate-edits dx
+            (maintain-vec
+              (e/par EditForm
+                (mx/mix >pending-view-diffs
+                  (e/server (e/reconcile stable-kf (e/fn [] records)))))))))))) ; illegal flow transfer
+            
+; send transaction up (in any state? dirty/pending is there a difference?)
+; wire pending state into for-by-streaming, diffed
+; just assume the dirty edit is about to upgrade to pending
+; diff target-state into the for-by-streaming for optimistic view
+
+; Note: when the dirty record becomes pending, and we edit further,           
+; it's the same edit structure

@@ -39,7 +39,7 @@
   "manifest a unified entity identity which is stabilized across tempid promotions, 
 i.e. make sure promoted tempids reuse the same identity if it had been 
 previously seen."
-  [!ids tx-report record]
+  [!ids tx-report record] ; todo dispose completed tempids
   (let [e (:db/id record)]
     (case (tempid? e)
       true (upsert-id! !ids e)

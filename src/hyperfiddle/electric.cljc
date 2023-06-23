@@ -524,6 +524,15 @@ fresh event."
      (hyperfiddle.electric/watch !state#)))
 
 (defn reconcile [kf <xs])
+(defn par [F >dxs])
+
+(defn map-by-impl [F kf <xs]
+  (maintain-vec (par F (reconcile kf <xs))))
+
+(defmacro map-by [F kf xs]
+  `(map-by-impl ~F ~kf (e/fn [] ~xs)))
+
+(map-by (e/fn [x] (name x)) identity [:a :b :c])
 
 (hyperfiddle.electric/defn For-by-streaming
   [stable-kf Branch >server-diffs >client-diffs]

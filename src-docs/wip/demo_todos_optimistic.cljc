@@ -12,7 +12,7 @@
             [hyperfiddle.electric-data :refer [Cons$ Car Cdr]]
             [hyperfiddle.electric-ui4 :as ui4]
             [hyperfiddle.electric-ui5 :as ui5 :refer [CreateController MasterList Field]]
-            [hyperfiddle.stage :refer [aggregate-edits promote-edits]]
+            [hyperfiddle.stage :refer [aggregate-edits promote-edits transact!_]]
             [missionary.core :as m]
             [wip.demo-datomic-helpers :refer [Latency FailRate slow-transact! db tx-report]]))
 
@@ -84,8 +84,7 @@ on submit"
         #_(dom/div {:class "todo-items"})
 
         (!return
-          (let [stable-kf (contrib.identity/Entity-id-locally-stabilzied!. 
-                            ui5/>tx-report)] ; fix
+          (let [stable-kf (contrib.identity/Entity-id-locally-stabilzied!. ui5/>tx-report)] ; fix
             (as-> (e/client (MasterList. stable-kf TodoItem TodoItemCreate)) 
               Curried (e/server (Curried. (todo-records hf/db))))))
 
@@ -112,7 +111,7 @@ on submit"
 
       (let [edits (new (m/relieve {} (Page.)))] ; accidental transfer
         (e/server
-          (new (m/ap (m/amb nil (ui5/!tx-report (m/?> (transact!_ (e/fn [] edits))))))))
+          (new (m/ap (m/amb nil (ui5/!tx-report (m/?< (transact!_ (e/fn [] edits))))))))
 
         (e/client
           (dom/hr)

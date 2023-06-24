@@ -94,24 +94,25 @@
   (let [id (contrib.identity/genesis-tempid! db)]
     [(?x id) (?dx id)])) ; see TodoItemCreate
 
-(defn monitor-genesis! [!genesis stable-kf x]
-  (m/ap
-    (let [e (stable-kf x)]
-      (swap! !genesis conj e)
-      [:assoc e x])))
-
-(defn monitor-birth! [!genesis >genesis stable-kf >tx-report]
-  (m/ap
-    (let [birthed-tempids (promoted-tempids (m/?< >tx-report))]
-      (when-some [local-births (seq (intersection birthed-tempids (m/?< >genesis)))]
-        ; "Birthed" entities are no longer managed by their mother.
-        (m/seed
-          (for [e local-births]
-            (let [e (stable-kf e DISPOSE)]
-              (swap! !genesis disj e)
-              [:dissoc e]))))))) ; is the dissoc even needed? Make e/reconcile idempotent
-
 (defn promoted-tempids [tx-report] (vals (:ids->tempids tx-report)))
+
+(defn local-births [genesis tx-report]
+  ; "Birthed" entities are no longer managed by their mother.
+  (intersection (promoted-tempids tx-report) genesis))
+
+(defn reconcile-tempids! [>x >tx-report]
+  (m/ap
+    (let [!genesis (atom #{}) >genesis (m/stream (m/watch !genesis))
+          [op :as diff] (m/amb (let [x (m/?< >x)]
+                                 [:assoc (stable-kf x) x])
+                          (m/seed
+                            (for [e (seq (local-births (m/?< >genesis) (m/?< >tx-report)))]
+                              [:dissoc (stable-kf :dispose e)])))]
+      (case op
+        :assoc (swap! !genesis conj e) ; genesis
+        :dissoc (swap! !genesis disj e) ; birth
+        :update nil
+        :move nil))))
 
 (e/defn CreateController
   "maintains an index of locally created entities by watching the Datomic tx-report"
@@ -124,14 +125,11 @@
   ;    so that they can be moved from the for? -- possible issue
   
   ; tx backpressure has been relieved, it's unlike to change
-  (let [[x dx] (e/snapshot ; popover could reopen, prevent bad things, fixme
-                 (with-genesis hf/db
-                   (Popover. "open" Form))) ; pending until commit
-        !genesis (atom #{}) >genesis (m/stream (m/watch !genesis))]
-    [(mx/mix ; discrete diffs for e/par
-       (monitor-genesis! !genesis stable-kf x)
-       (monitor-birth! !genesis >genesis stable-kf >tx-report))
-     dx])) ; txn - send up, it's a signal due to relieving backpressure of the user
+  (let [[x batched-dx] (e/snapshot ; todo handle popover reopen (unwind effects?)
+                         (with-genesis hf/db
+                           (Popover. "open" Form))) ; pending until commit
+        >par-diffs (new (reconcile-tempids! (e/fn [] x) >tx-report))]
+    [>par-diffs batched-dx]))
 
 (e/defn MasterList
   "coordinates the insertion of new entities into a database-backed editable list

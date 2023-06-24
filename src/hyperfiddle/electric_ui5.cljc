@@ -105,21 +105,26 @@ where is error/pending? on the tx-report for this tx?"
   (let [id (contrib.identity/genesis-tempid! db)]
     [(?x id) (?dx id)])) ; see TodoItemCreate
 
+(e/defn Monitor-txn! [[x dx :as xdx] >tx-report]
+  (let [!pending-tx (atom nil)]
+    (reset! !pending-tx batched-dx) ; but only track latest 
+    (when (contains? (::accepted (new >tx-report)) batched-dx) ; assume unaltered, fixme
+      (reset! !pending-tx nil))
+    (e/watch !pending-tx))) ; clear once accepted
+
 (defn monitor-txn!
   "Fields use this to return the transaction until it is marked completed, then 
 switch to nil. controls need to know if a pending txn they submitted has been 
 completed or rejected to draw the green dot (and not glitch under concurrent 
 modification)."
   [>xdx >tx-report]
-  ; This logic is unrelated to tempid watching?
   (m/ap
-    ; can it be done in Electric without missing a tx-report?
     (let [!pending-tx (atom nil) >pending-tx (m/stream (m/watch !pending-tx))
-          [x dx] (m/?< >xdx)] ; intent is one at a time, this is an explicit submit event
-      (reset! !pending-tx dx) ; but only track latest 
-      (when (contains? (::accepted (m/?< >tx-report)) dx) ; assume unaltered, fixme
+          [x batched-dx] (m/?< >xdx)] ; intent is one at a time, this is an explicit submit event
+      (reset! !pending-tx batched-dx) ; but only track latest 
+      (when (contains? (::accepted (m/?< >tx-report)) batched-dx) ; assume unaltered, fixme
         (reset! !pending-tx nil)) 
-      (m/?< >pending-tx)))) ; clear once accepted
+      (m/?< >pending-tx))))
 
 (defn promoted-tempids [tx-report] (vals (:ids->tempids tx-report)))
 
@@ -127,10 +132,14 @@ modification)."
   ; "Birthed" entities are no longer managed by their mother.
   (intersection (promoted-tempids tx-report) genesis))
 
-(defn reconcile-tempids! 
+#_
+(defn reconcile-pending-entities! 
   "Master-list uses this to coordinate entity creation between the create-controller
-and the e/for-by-streaming."
+and the e/for-by-streaming. Unlike monitor-txn!, this will manage multiple entities 
+created concurrently which progress in isolation."
   [>x >tx-report]
+  ; Can this be implemented in terms of monitor-tx to monitor the txn with the 
+  ; tempids in it for completion, rather than watching for the tempid itself?
   (m/ap
     (let [!genesis (atom #{}) >genesis (m/stream (m/watch !genesis))
           [op e x :as diff] (m/?< (m/amb (let [x (m/?< >x)]
@@ -145,6 +154,18 @@ and the e/for-by-streaming."
         :move nil)
       diff)))
 
+(defn reconcile-pending-entities!-2
+  "Master-list uses this to coordinate entity creation between the create-controller
+and the e/for-by-streaming. Unlike monitor-txn!, this will manage multiple entities 
+created concurrently which progress in isolation."
+  [>xdx >tx-report]
+  (m/ap
+    (let [[x dx] (m/?> ##Inf >xdx)]
+      (try (if-some [tx (monitor-txn! >xdx >tx-report)]
+             [:assoc (stable-kf x) x]
+             [:dissoc (stable-kf :dispose x)])
+        (catch Exception e #_(reset! !status ::rejected)))))) ; todo retry
+
 (e/defn CreateController
   "maintains an index of locally created entities by watching the Datomic tx-report"
   [stable-kf Form #_&args]
@@ -156,10 +177,13 @@ and the e/for-by-streaming."
   ;    so that they can be moved from the for? -- possible issue
   
   ; tx backpressure has been relieved, it's unlike to change
-  (let [[x batched-dx] (e/snapshot ; todo handle popover reopen (unwind effects?)
-                         (with-genesis hf/db
-                           (Popover. "open" Form))) ; pending until commit
-        >par-diffs (new (reconcile-tempids! (e/fn [] x) >tx-report))]
+  (let [[x batched-dx :as xdx]
+        (e/snapshot ; todo handle popover reopen (unwind effects?)
+          (with-genesis hf/db
+            (Popover. "open" Form))) ; pending until commit
+
+        >par-diffs (new (reconcile-pending-entities!-2 (e/fn [] xdx) >tx-report))
+        #_#_>par-diffs (new (reconcile-pending-entities! (e/fn [] x) >tx-report))]
     [>par-diffs batched-dx]))
 
 (e/defn MasterList

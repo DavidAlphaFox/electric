@@ -24,35 +24,46 @@
   (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
 
 (e/defn Field ; client bias, bias is v. delicate
-  "returns a signal of [viewstate tx]"
+  "returns a signal of [viewstate tx]; is it pure?
+where is error/pending? on the tx-report for this tx?"
   [{:keys [v Control parse unparse txn] #_[status]
     :or {txn identity}}]
   (e/client
-    (let [!status (atom ::synced) status (e/watch !status)
-          !x (atom nil) x (e/watch !x)
-          !dx (e/server (atom nil)) dx (try (e/server (e/watch !dx)) (catch Pending _)) ; prevent delays
-          !err (atom nil) err (e/watch !err)]
+    (let [!status (atom ::accepted) status (e/watch !status) ; failed, pending
+          #_#_#_#_!err (atom nil) err (e/watch !err)]
 
-      (let [v (unparse (Control. (parse v) status))]
-
-        (reset! !status ::dirty)
-        (reset! !x (optimistic v))
-        (try
-          (case (e/server
-                  (let [dx (txn v)]
-                    (reset! !dx dx)
-                    ; where do we branch the tx-report binding? Popover?
-                    #_(!tx-report (new (e/task->cp (transact! conn dx)))))) ; optional
-            (reset! !status ::synced)) ; caller can shadow based on transact! configuration
-          (catch Pending _
-            (reset! !status ::pending)) ; caller can shadow
-          (catch :default err
-            (reset! !status ::failed)
-            (reset! !err err)))
-
-        #_!status ; hook to mark completed? is it needed? or is it branch by branch? does that imply a swap?
-        #_[status x dx err]; monitor
-        [x dx]))))
+      ; Any new v triggers Pending transition
+      ; construct the txn, send up
+      ; Await a tx-report that marks our txn as Accepted or Rejected
+      
+      (let [v (unparse (Control. (parse v) status))
+            _ (reset! !status ::dirty) ; pre blur
+            
+            ; Todo commit/discard logic here, a popover level
+            ; produce xdx on commit
+            
+            _ (reset! !status ::pending) ; on blur, txn is sent up
+            
+            >xdx (e/fn [] [(optimistic v) (txn v)])] 
+        
+                ; send up txn in CT
+        ; Know if this exact txn is reflected in the tx report
+        ; -- do we need to perform deep datom inspection?
+        ; -- we will get the exact tx-report back in a world without popovers
+        ; -- with popovers, we get a batched txn back, we need to know if our edit was included
+        ; -- -- i can solve this later
+        
+        ; for now: just check for exact match of txn in the report
+        ; m/relieve causes txn to change. How do we track successive versions
+        ; of the same logical txn that is pending?
+        
+        ; How do we avoid smashing the transactor in spreadsheet mode
+        ; when we type fast? We need to allocate another popover boundary for each
+        ; field to get tab/enter/esc -- commit/discard
+        
+        (try (if-some [tx (new (monitor-txn! >xdx >tx-report))]
+               tx (reset! !status ::accepted))
+          (catch Exception e (reset! !status ::rejected)))))))
 
 (e/defn DomInputController [node event-type v-server status ref!]
   (let [v (new (->> (m/observe (fn [!] (dom-listener node event-type ! opts)))
@@ -94,25 +105,45 @@
   (let [id (contrib.identity/genesis-tempid! db)]
     [(?x id) (?dx id)])) ; see TodoItemCreate
 
+(defn monitor-txn!
+  "Fields use this to return the transaction until it is marked completed, then 
+switch to nil. controls need to know if a pending txn they submitted has been 
+completed or rejected to draw the green dot (and not glitch under concurrent 
+modification)."
+  [>xdx >tx-report]
+  ; This logic is unrelated to tempid watching?
+  (m/ap
+    ; can it be done in Electric without missing a tx-report?
+    (let [!pending-tx (atom nil) >pending-tx (m/stream (m/watch !pending-tx))
+          [x dx] (m/?< >xdx)] ; intent is one at a time, this is an explicit submit event
+      (reset! !pending-tx dx) ; but only track latest 
+      (when (contains? (::accepted (m/?< >tx-report)) dx) ; assume unaltered, fixme
+        (reset! !pending-tx nil)) 
+      (m/?< >pending-tx)))) ; clear once accepted
+
 (defn promoted-tempids [tx-report] (vals (:ids->tempids tx-report)))
 
 (defn local-births [genesis tx-report]
   ; "Birthed" entities are no longer managed by their mother.
   (intersection (promoted-tempids tx-report) genesis))
 
-(defn reconcile-tempids! [>x >tx-report]
+(defn reconcile-tempids! 
+  "Master-list uses this to coordinate entity creation between the create-controller
+and the e/for-by-streaming."
+  [>x >tx-report]
   (m/ap
     (let [!genesis (atom #{}) >genesis (m/stream (m/watch !genesis))
-          [op :as diff] (m/amb (let [x (m/?< >x)]
-                                 [:assoc (stable-kf x) x])
-                          (m/seed
-                            (for [e (seq (local-births (m/?< >genesis) (m/?< >tx-report)))]
-                              [:dissoc (stable-kf :dispose e)])))]
+          [op e x :as diff] (m/?< (m/amb (let [x (m/?< >x)]
+                                           [:assoc (stable-kf x) x])
+                                    (m/seed
+                                      (for [e (seq (local-births (m/?< >genesis) (m/?< >tx-report)))]
+                                        [:dissoc (stable-kf :dispose e)]))))]
       (case op
         :assoc (swap! !genesis conj e) ; genesis
         :dissoc (swap! !genesis disj e) ; birth
         :update nil
-        :move nil))))
+        :move nil)
+      diff)))
 
 (e/defn CreateController
   "maintains an index of locally created entities by watching the Datomic tx-report"

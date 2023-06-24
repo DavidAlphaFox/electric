@@ -313,6 +313,6 @@
     (let [tx (m/?> ##Inf (m/seed (m/?< <txs)))] ; race them
       (try
         (let [tx-report (m/? (slow-transact! conn dirty))]
-          (assoc tx-report ::completed tx))
+          (assoc tx-report ::accepted tx))
         (catch Exception e
           (assoc old-tx-report ::rejected tx))))))

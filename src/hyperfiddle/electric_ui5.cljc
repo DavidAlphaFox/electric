@@ -105,13 +105,6 @@ where is error/pending? on the tx-report for this tx?"
   (let [id (contrib.identity/genesis-tempid! db)]
     [(?x id) (?dx id)])) ; see TodoItemCreate
 
-(e/defn Monitor-txn! [[x dx :as xdx] >tx-report]
-  (let [!pending-tx (atom nil)]
-    (reset! !pending-tx batched-dx) ; but only track latest 
-    (when (contains? (::accepted (new >tx-report)) batched-dx) ; assume unaltered, fixme
-      (reset! !pending-tx nil))
-    (e/watch !pending-tx))) ; clear once accepted
-
 (defn monitor-txn!
   "Fields use this to return the transaction until it is marked completed, then 
 switch to nil. controls need to know if a pending txn they submitted has been 
@@ -119,42 +112,14 @@ completed or rejected to draw the green dot (and not glitch under concurrent
 modification)."
   [>xdx >tx-report]
   (m/ap
-    (let [!pending-tx (atom nil) >pending-tx (m/stream (m/watch !pending-tx))
+    (let [!pending-tx (atom nil)
           [x batched-dx] (m/?< >xdx)] ; intent is one at a time, this is an explicit submit event
       (reset! !pending-tx batched-dx) ; but only track latest 
       (when (contains? (::accepted (m/?< >tx-report)) batched-dx) ; assume unaltered, fixme
         (reset! !pending-tx nil)) 
-      (m/?< >pending-tx))))
+      (m/?< (m/watch !pending-tx)))))
 
-(defn promoted-tempids [tx-report] (vals (:ids->tempids tx-report)))
-
-(defn local-births [genesis tx-report]
-  ; "Birthed" entities are no longer managed by their mother.
-  (intersection (promoted-tempids tx-report) genesis))
-
-#_
-(defn reconcile-pending-entities! 
-  "Master-list uses this to coordinate entity creation between the create-controller
-and the e/for-by-streaming. Unlike monitor-txn!, this will manage multiple entities 
-created concurrently which progress in isolation."
-  [>x >tx-report]
-  ; Can this be implemented in terms of monitor-tx to monitor the txn with the 
-  ; tempids in it for completion, rather than watching for the tempid itself?
-  (m/ap
-    (let [!genesis (atom #{}) >genesis (m/stream (m/watch !genesis))
-          [op e x :as diff] (m/?< (m/amb (let [x (m/?< >x)]
-                                           [:assoc (stable-kf x) x])
-                                    (m/seed
-                                      (for [e (seq (local-births (m/?< >genesis) (m/?< >tx-report)))]
-                                        [:dissoc (stable-kf :dispose e)]))))]
-      (case op
-        :assoc (swap! !genesis conj e) ; genesis
-        :dissoc (swap! !genesis disj e) ; birth
-        :update nil
-        :move nil)
-      diff)))
-
-(defn reconcile-pending-entities!-2
+(defn genesis-entity-lifecycle!
   "Master-list uses this to coordinate entity creation between the create-controller
 and the e/for-by-streaming. Unlike monitor-txn!, this will manage multiple entities 
 created concurrently which progress in isolation."
@@ -168,22 +133,12 @@ created concurrently which progress in isolation."
 
 (e/defn CreateController
   "maintains an index of locally created entities by watching the Datomic tx-report"
-  [stable-kf Form #_&args]
-  
-  ; are we watching for tempids, or really for tx completion?
-  ; Note, txns are concurrent and can overlap tempids!!
-  ; don't track births, track txn completion by hash of txn.
-  ; todo: enhance tx-report with the hash of txns that completed
-  ;    so that they can be moved from the for? -- possible issue
-  
-  ; tx backpressure has been relieved, it's unlike to change
-  (let [[x batched-dx :as xdx]
-        (e/snapshot ; todo handle popover reopen (unwind effects?)
-          (with-genesis hf/db
-            (Popover. "open" Form))) ; pending until commit
-
-        >par-diffs (new (reconcile-pending-entities!-2 (e/fn [] xdx) >tx-report))
-        #_#_>par-diffs (new (reconcile-pending-entities! (e/fn [] x) >tx-report))]
+  [stable-kf Form #_&args]  
+  ; tx backpressure has been relieved, it's unlikely to change
+  (let [[x batched-dx :as xdx] (e/snapshot ; todo handle popover reopen (unwind effects?)
+                                 (with-genesis hf/db
+                                   (Popover. "open" Form))) ; pending until commit
+        >par-diffs (new (genesis-entity-lifecycle! (e/fn [] xdx) >tx-report))]
     [>par-diffs batched-dx]))
 
 (e/defn MasterList
@@ -202,11 +157,3 @@ through its edit lifecycle (dirty -> pending -> completed)."
                 (e/par EditForm
                   (mx/mix >pending-view-diffs
                     (e/server (e/reconcile stable-kf (e/fn [] records))))))))))))) ; illegal flow transfer
-            
-; send transaction up (in any state? dirty/pending is there a difference?)
-; wire pending state into for-by-streaming, diffed
-; just assume the dirty edit is about to upgrade to pending
-; diff target-state into the for-by-streaming for optimistic view
-
-; Note: when the dirty record becomes pending, and we edit further,           
-; it's the same edit structure

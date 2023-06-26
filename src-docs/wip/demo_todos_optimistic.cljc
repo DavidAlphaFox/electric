@@ -119,10 +119,3 @@ on submit"
         (e/client
           (dom/hr)
           (ui4/edn edits nil (dom/props {:disabled true :class (css-slugify `staged)})))))))
-
-; do pending txns need to be kept separate?
-; YES, because they stay in the stage until they are completed
-; but we don't want to transact them N times!
-
-; edits are isolated unless userland explicitly batches with a relieve?
-; e.g. a popover?

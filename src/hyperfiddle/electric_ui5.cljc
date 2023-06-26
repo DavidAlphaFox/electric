@@ -43,23 +43,8 @@ where is error/pending? on the tx-report for this tx?"
             ; produce xdx on commit
             
             _ (reset! !status ::pending) ; on blur, txn is sent up
-            
-            >xdx (e/fn [] [(optimistic v) (txn v)])] 
-        
-                ; send up txn in CT
-        ; Know if this exact txn is reflected in the tx report
-        ; -- do we need to perform deep datom inspection?
-        ; -- we will get the exact tx-report back in a world without popovers
-        ; -- with popovers, we get a batched txn back, we need to know if our edit was included
-        ; -- -- i can solve this later
-        
-        ; for now: just check for exact match of txn in the report
-        ; m/relieve causes txn to change. How do we track successive versions
-        ; of the same logical txn that is pending?
-        
-        ; How do we avoid smashing the transactor in spreadsheet mode
-        ; when we type fast? We need to allocate another popover boundary for each
-        ; field to get tab/enter/esc -- commit/discard
+
+            >xdx (e/fn [] [(optimistic v) (txn v)])]
         
         (try (if-some [tx (new (monitor-txn! >xdx >tx-report))]
                tx (reset! !status ::accepted))

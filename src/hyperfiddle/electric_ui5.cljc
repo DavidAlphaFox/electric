@@ -1,6 +1,7 @@
 (ns hyperfiddle.electric-ui5
   #?(:cljs (:require-macros hyperfiddle.electric-ui5))
   (:refer-clojure :exclude [long double keyword symbol uuid range])
+  (:import [hyperfiddle.electric Failure Pending])
   (:require clojure.edn
             [clojure.set :refer [intersection]]
             [contrib.data :refer [transpose index-by]]
@@ -14,69 +15,61 @@
             [hyperfiddle.electric-ui4 :as ui4]
             [hyperfiddle.electric-data :refer [Triple First Second Third]]
             [hyperfiddle.rcf :refer [tests tap % with]]
-            [hyperfiddle.stage :refer [aggregate-edits]]
+            [hyperfiddle.stage :refer [cons-edit]]
             [missionary.core :as m]))
 
 (def !tx-report)
 (e/def >tx-report)
 
 (defn progress-color [state]
-  (case state ::e/init "gray" ::e/ok "green" ::e/pending "yellow" ::e/failed "red"))
+  (case state ::dirty "blue" ::pending "yellow" ::accepted "green" ::rejected "red"))
 
-(e/defn Field ; client bias, bias is v. delicate
-  "returns a signal of [viewstate tx]; is it pure?
-where is error/pending? on the tx-report for this tx?"
-  [{:keys [v Control parse unparse txn] #_[status]
-    :or {txn identity}}]
+(e/defn Field
+  "returns a signal of pending edits that clears to nil once acknowledged in the 
+tx-report."
+  [{:keys [v Control parse unparse edit]
+    :or {parse identity, unparse identity, edit identity}}]
   (e/client
-    (let [!status (atom ::accepted) status (e/watch !status) ; failed, pending
-          #_#_#_#_!err (atom nil) err (e/watch !err)]
+    (let [!status (atom ::accepted) status (e/watch !status)]
+      (when-some [v! (Popover "todo iframe" ; simulated esc/tab/enter
+                       (e/fn [commit!discard!]
+                         (let [v (unparse (Control. (parse v) status))]
+                           (when (e/Edge. v) (reset! !status ::dirty)) ; yet to commit
+                           v)))]
+        (reset! !status ::pending) ; committed
+        (let [[x! tx!] (edit v!)] ; what about when tx! is curried? can we genesis here?
+          [x! (e/amb tx! ; todo check latency and races
+                (e/server
+                  (try (let [?tx! (new (monitor-txn! (e/fn [] tx!) >tx-report))]
+                         (when (nil? ?tx!) (reset! !status ::accepted))
+                         ?tx!)
+                    (catch Exception e (reset! !status ::rejected) tx!))))])))))
 
-      ; Any new v triggers Pending transition
-      ; construct the txn, send up
-      ; Await a tx-report that marks our txn as Accepted or Rejected
-      
-      (let [v (unparse (Control. (parse v) status))
-            _ (reset! !status ::dirty) ; pre blur
-            
-            ; Todo commit/discard logic here, a popover level
-            ; produce xdx on commit
-            
-            _ (reset! !status ::pending) ; on blur, txn is sent up
-
-            >xdx (e/fn [] [(optimistic v) (txn v)])]
-        
-        (try (if-some [tx (new (monitor-txn! >xdx >tx-report))]
-               tx (reset! !status ::accepted))
-          (catch Exception e (reset! !status ::rejected)))))))
-
-(e/defn DomInputController [node event-type v-server status ref!]
+(e/defn DomInputController [node event-type v0 status ref!]
   (let [v (new (->> (m/observe (fn [!] (dom-listener node event-type ! opts)))
-                 (m/relieve {}) ; input value signal, never backpressure the user
+                 (m/relieve {}) ; never backpressure the user
                  (m/eduction (map (fn event->value [e] (parse (ref! (.-target e))))))
-                 (m/reductions {} v-server)))]
+                 (m/reductions {} v0)))]
     (cond
-      (dom/Focused?. node) v'
-      (= ::pending status) v'
-        ;(= ::failed status) ?
-        ;(= ::init status) v-server
-      (= ::ok status) (do (ref! v-server) v-server)))) ; concurrent edit, otherwise work-skipped
+      (dom/Focused?. node) v ; ignore concurrent modifications while typing
+      (#{::dirty ::pending ::rejected} status) v ; ignore concurrent modifications until accepted
+      (= ::accepted status) (do (ref! v0) v0)))) ; concurrent modification, otherwise work-skipped
 
 (e/defn Checkbox [v status]
   (dom/input (dom/props {:type "checkbox"})
-    (let [v' (DOMInputController. dom/node "change" v status
-               (partial dom/-node-checked! dom/node))]
+    (let [v (DOMInputController. dom/node "change" v status
+              (partial dom/-node-checked! dom/node))]
       (dom/style {:outline (str "2px solid " (progress-color status))})
       (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
-      v')))
+      v)))
 
 (e/defn Input [v status]
   (dom/input
-    (let [v' (DOMInputController. dom/node "input" v status
-               (partial dom/-node-value! dom/node))]
+    (let [v (DOMInputController. dom/node "input" v status
+              (partial dom/-node-value! dom/node))]
       (dom/style {:outline (str "2px solid " (progress-color status))})
       (assert (not= ::failed status) "transaction failures are impossible here (otherwise would need to filter them here)")
-      v')))
+      v)))
 
 (e/defn Button [label rf acc0]
   (dom/button
@@ -86,32 +79,33 @@ where is error/pending? on the tx-report for this tx?"
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
-(defn with-genesis [db [?x ?dx]]
+(defn with-genesis [db [?x! ?dx!]]
   (let [id (contrib.identity/genesis-tempid! db)]
-    [(?x id) (?dx id)])) ; see TodoItemCreate
+    [(?x! id) (?dx! id)])) ; see TodoItemCreate
 
-(defn monitor-txn!
+(defn monitor-txn! ; Await a tx-report that marks our txn as Accepted or Rejected
   "Fields use this to return the transaction until it is marked completed, then 
 switch to nil. controls need to know if a pending txn they submitted has been 
 completed or rejected to draw the green dot (and not glitch under concurrent 
 modification)."
-  [>xdx >tx-report]
+  [>tx >tx-report] ; server
   (m/ap
     (let [!pending-tx (atom nil)
-          [x batched-dx] (m/?< >xdx)] ; intent is one at a time, this is an explicit submit event
+          {:keys [::accepted ::rejected ::rejection]} (m/?< >tx-report)
+          batched-dx (m/?< >tx)] ; intent is one at a time, this is an explicit submit event
       (reset! !pending-tx batched-dx) ; but only track latest 
-      (when (contains? (::accepted (m/?< >tx-report)) batched-dx) ; assume unaltered, fixme
-        (reset! !pending-tx nil)) 
+      (when (contains? accepted batched-dx) (reset! !pending-tx nil)) ; assume unaltered, fixme
+      (when (contains? rejected batched-dx) (Failure. rejection))
       (m/?< (m/watch !pending-tx)))))
 
 (defn genesis-entity-lifecycle!
   "Master-list uses this to coordinate entity creation between the create-controller
 and the e/for-by-streaming. Unlike monitor-txn!, this will manage multiple entities 
 created concurrently which progress in isolation."
-  [>xdx >tx-report]
+  [>x >dx >tx-report]
   (m/ap
-    (let [[x dx] (m/?> ##Inf >xdx)]
-      (try (if-some [tx (monitor-txn! >xdx >tx-report)]
+    (let [[x dx] (m/?> ##Inf (m/zip >x >dx))]
+      (try (if-some [tx (monitor-txn! >dx >tx-report)]
              [:assoc (stable-kf x) x]
              [:dissoc (stable-kf :dispose x)])
         (catch Exception e #_(reset! !status ::rejected)))))) ; todo retry
@@ -120,11 +114,11 @@ created concurrently which progress in isolation."
   "maintains an index of locally created entities by watching the Datomic tx-report"
   [stable-kf Form #_&args]  
   ; tx backpressure has been relieved, it's unlikely to change
-  (let [[x batched-dx :as xdx] (e/snapshot ; todo handle popover reopen (unwind effects?)
-                                 (with-genesis hf/db
-                                   (Popover. "open" Form))) ; pending until commit
-        >par-diffs (new (genesis-entity-lifecycle! (e/fn [] xdx) >tx-report))]
-    [>par-diffs batched-dx]))
+  (let [[x! batched-dx!] (e/snapshot ; todo handle popover reopen (unwind effects?)
+                           (with-genesis hf/db
+                             (Popover. "open" Form))) ; pending until commit
+        >par-diffs (new (genesis-entity-lifecycle! (e/fn [] x!) (e/fn [] dx!) >tx-report))]
+    [>par-diffs x! batched-dx!]))
 
 (e/defn MasterList
   "coordinates the insertion of new entities into a database-backed editable list
@@ -134,11 +128,14 @@ through its edit lifecycle (dirty -> pending -> completed)."
   (e/server
     (e/fn [records] ; e/fn transfer
       (e/client
-        (let [[>pending-view-diffs dx] (CreateController. stable-kf CreateForm)]
-          (vector ; isolated txs that race in parallel unless a popover batches them
-            dx #_x ; x is local now?
-            (map second ; just the dxs for now, throw away the view state
-              (maintain-vec
-                (e/par EditForm
-                  (mx/mix >pending-view-diffs
-                    (e/server (e/reconcile stable-kf (e/fn [] records))))))))))))) ; illegal flow transfer
+        ; Instead, can we re-parent the Electric frame into the list?
+        (let [[>pending-view-diffs x! dx!] (CreateController. stable-kf CreateForm)]
+          ; emit isolated txs that race unless a popover batches them
+          (->> (e/server (e/reconcile stable-kf (e/fn [] records))) ; illegal flow transfer
+            (mx/mix >pending-view-diffs)
+            (e/par EditForm) ; list of fields
+            maintain-vec ; list of forms is a list-list-fields
+            (mapcat identity) ; flattened list of fields
+            #_(remove nil?) ; most fields are not firing concurrently
+            (cons-edit [x! dx!]) ; send up create tx
+            ))))))

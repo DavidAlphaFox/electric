@@ -422,6 +422,20 @@ running on a remote host.
     form
     (throw (ex-info (str "Electric code (" fn ") inside a Clojure function") (into {:electric-fn fn} (meta &form))))))
 
+(defmacro amb [a b] `(try ~b (catch Pending _ ~a)))
+
+(comment (e/amb 1 (e/server 2)))
+
+(cc/defn delay [>x] (m/ap (m/?< (m/eduction (drop 1) >x))))
+
+(hyperfiddle.electric/defn Delay [x]
+  (let [>x (e/fn [] x)]
+    (new (m/ap (m/amb (Failure. (Pending.))
+                 (m/?< (m/eduction (drop 1) >x)))))))
+
+(hyperfiddle.electric/defn Edge [x] 
+  (new (e/amb nil (Delay. x)))) ; work skipped
+
 (cc/defn -snapshot [flow] (->> flow (m/eduction (contrib.data/take-upto (complement #{r/pending})))))
 
 (defmacro snapshot 

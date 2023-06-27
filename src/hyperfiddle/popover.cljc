@@ -16,7 +16,10 @@
 
 (e/defn BranchWrap [Body-client] ; todo colorless p/fns
   (let [return (m/dfv)
-        x (Body-client.)]
+        x (Body-client. (fn commit!discard! [cmd]
+                          (case cmd 
+                            :commit (return x)
+                            :discard (return nil))))]
     (dom/hr)
     (ui4/button (e/fn [] (return x)) (dom/text "commit!"))
     (ui4/button (e/fn [] (return nil)) (dom/text "discard"))

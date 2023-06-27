@@ -12,7 +12,7 @@
             [hyperfiddle.electric-data :refer [Cons$ Car Cdr]]
             [hyperfiddle.electric-ui4 :as ui4]
             [hyperfiddle.electric-ui5 :as ui5 :refer [CreateController MasterList Field]]
-            [hyperfiddle.stage :refer [aggregate-edits promote-edits transact!_]]
+            [hyperfiddle.stage :refer [transact!_]]
             [missionary.core :as m]
             [wip.demo-datomic-helpers :refer [Latency FailRate slow-transact! db tx-report]]))
 
@@ -36,44 +36,33 @@
 (e/defn TodoItem [{:keys [db/id] :as ?record}] ; pre-pulled, todo entity api
   (e/client
     (dom/div (dom/style {:display "flex", :align-items "center"})
-      (aggregate-edits
-        ; single optimistic document, multiple txns?
-        ; send up the best possible viewstate
-        (ui5/Field.
-          :record (get ?record :task/status) ; todo entity api
-          :Control ui5/Checkbox
-          :parse {:done true, :active false}
-          :unparse {true :done, false :active}
-          :optimistic (fn [v] {:db/id (:db/id ?record) :task/status x})
-          :txn (fn [x] [{:db/id (:db/id ?record) :task/status x}]))
-        (ui5/Field.
-          :record  (get ?record :task/description)
-          :Control ui5/Input
-          :parse identity
-          :unparse identity
-          :optimistic (fn [v] {:task/description v})
-          :txn (fn [tx] [{:db/id (:db/id ?record) :task/description v}]))))))
+      [(ui5/Field.
+         :record (get ?record :task/status) ; todo entity api
+         :Control ui5/Checkbox
+         :parse {:done true, :active false}
+         :unparse {true :done, false :active}
+         :edit (fn [v] [{:db/id (:db/id ?record) :task/status v}
+                        [{:db/id (:db/id ?record) :task/status v}]]))
+       (ui5/Field.
+         :record  (get ?record :task/description)
+         :Control ui5/Input
+         :edit (fn [v] [{:task/description v}
+                        [{:db/id (:db/id ?record) :task/description v}]]))])))
 
 (e/defn TodoItemCreate "just another form, the caller will branch and deal with genesis
 on submit"
   []
-  #_(aggregate-edits) ; return a single edit for the whole form
-  (ui5/Field.
-    :record (e/server {:task/description nil})
-    :Control ui5/Input ; todo esc to revert
-; how can Submit be wired directly to commit-stage in DT?
-    :parse identity
-    :unparse identity
-
-      ; no ID yet for create
-    :optimistic (fn [v] (fn [e] {:db/id e
-                                 :task/description v
-                                 :task/status :active
-                                 :task/order next-order-id}))
-    :txn (fn [v] (fn [e] [[:db/add e :task/description v]
-                          [:db/add e :task/status :active]
-                          [:db/add e :task/order next-order-id]]))
-    (dom/props {:placeholder "Buy milk"})))
+  [(ui5/Field.
+     :record (e/server {:task/description nil})
+     :Control ui5/Input
+     :edit (fn [v] (fn [e] [{:db/id e
+                             :task/description v
+                             :task/status :active
+                             :task/order next-order-id}
+                            [[:db/add e :task/description v]
+                             [:db/add e :task/status :active]
+                             [:db/add e :task/order next-order-id]]]))
+     (dom/props {:placeholder "Buy milk"}))])
 
 (e/defn Page []
   (e/client

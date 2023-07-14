@@ -36,7 +36,8 @@
 (e/defn TodoItem [{:keys [db/id] :as ?record}] ; pre-pulled, todo entity api
   (e/client
     (dom/div (dom/style {:display "flex", :align-items "center"})
-      [(ui5/Field.
+     (amb
+       (ui5/Field.
          :record (get ?record :task/status) ; todo entity api
          :Control ui5/Checkbox
          :parse {:done true, :active false}
@@ -47,11 +48,13 @@
          :record  (get ?record :task/description)
          :Control ui5/Input
          :edit (fn [v] [{:task/description v}
-                        [{:db/id (:db/id ?record) :task/description v}]]))])))
+                        [{:db/id (:db/id ?record) :task/description v}]]))))))
 
 (e/defn TodoItemCreate "just another form, the caller will branch and deal with genesis
 on submit"
   []
+  ; How can we move the genesis edit to here? So we don't have to deconstruct
+  ; the form monitor?
   [(ui5/Field.
      :record (e/server {:task/description nil})
      :Control ui5/Input

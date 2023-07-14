@@ -16,7 +16,8 @@
             [hyperfiddle.electric-data :refer [Triple First Second Third]]
             [hyperfiddle.rcf :refer [tests tap % with]]
             [hyperfiddle.stage :refer [cons-edit]]
-            [missionary.core :as m]))
+            [missionary.core :as m]
+            [clojure.string :as s]))
 
 (def !tx-report)
 (e/def >tx-report)
@@ -79,7 +80,7 @@ tx-report."
 
 #_(case status ::e/failed (.warn js/console v) nil) ; debug, note cannot fail as not a transaction
 
-(defn with-genesis [db [?x! ?dx!]]
+(defn with-genesis [db [?x! ?dx!]] ; is this a list-field not individual field?
   (let [id (contrib.identity/genesis-tempid! db)]
     [(?x! id) (?dx! id)])) ; see TodoItemCreate
 
@@ -103,11 +104,13 @@ modification)."
 and the e/for-by-streaming. Unlike monitor-txn!, this will manage multiple entities 
 created concurrently which progress in isolation."
   [>x >dx >tx-report]
+  
+   ; todo in v3.1 we can return empty diff, therefore don't return lifted flow
   (m/ap
     (let [[x dx] (m/?> ##Inf (m/zip >x >dx))]
       (try (if-some [tx (monitor-txn! >dx >tx-report)]
-             [:assoc (stable-kf x) x]
-             [:dissoc (stable-kf :dispose x)])
+             [:push (stable-kf x) x]
+             [:pop (stable-kf :dispose x)])
         (catch Exception e #_(reset! !status ::rejected)))))) ; todo retry
 
 (e/defn CreateController
@@ -117,8 +120,8 @@ created concurrently which progress in isolation."
   (let [[x! batched-dx!] (e/snapshot ; todo handle popover reopen (unwind effects?)
                            (with-genesis hf/db
                              (Popover. "open" Form))) ; pending until commit
-        >par-diffs (new (genesis-entity-lifecycle! (e/fn [] x!) (e/fn [] dx!) >tx-report))]
-    [>par-diffs x! batched-dx!]))
+        par-diffs (new (genesis-entity-lifecycle! (e/fn [] x!) (e/fn [] dx!) >tx-report))] 
+    [par-diffs x! batched-dx!]))
 
 (e/defn MasterList
   "coordinates the insertion of new entities into a database-backed editable list
@@ -129,13 +132,54 @@ through its edit lifecycle (dirty -> pending -> completed)."
     (e/fn [records] ; e/fn transfer
       (e/client
         ; Instead, can we re-parent the Electric frame into the list?
-        (let [[>pending-view-diffs x! dx!] (CreateController. stable-kf CreateForm)]
+        (let [[pending-view-diffs x! dx!] (CreateController. stable-kf CreateForm)]
+          ; todo xdx can be a form monitor, not just single field
           ; emit isolated txs that race unless a popover batches them
-          (->> (e/server (e/reconcile stable-kf (e/fn [] records))) ; illegal flow transfer
-            (mx/mix >pending-view-diffs)
+          (->> (e/server (e/expand-by stable-kf records)) ; legal transfer!
+            (mx/mix-diffs >pending-view-diffs) ; TODO: local info must take precedence
             (e/par EditForm) ; list of fields
             maintain-vec ; list of forms is a list-list-fields
             (mapcat identity) ; flattened list of fields
             #_(remove nil?) ; most fields are not firing concurrently
             (cons-edit [x! dx!]) ; send up create tx
-            ))))))
+            )
+
+          (-> (EditForm. (amb (e/server (e/expand-by stable-kf records)) pending-view-diffs))
+            (->> (mapcat identity)) ; flattened list of fields
+            (or (amb)) ; edits are sparse, remove nil edits
+            #_collapse))))))
+
+; L: missing operator `mix-diffs` that can reconcile an optimistic view with an authoritative view
+; mix-diffs :: Flow[Diff[T]] -> Flow[Diff[T]] -> Flow[Diff[T]]
+; data Diff k t = List (Push k | Pop k | Assoc k t | Swap k)
+
+
+(defn mix-diffs [>a >b] (join-diff (reconcile identity (vector >a >b))))
+(def mix-diffs [as bs] ; as and bs are database resultsets
+  (concat as bs)) ; time-ordered, bs are local/more recent and therefore at bottom
+
+(tests  
+  (mix-diffs
+    (e/reconcile stable-kf
+      [{:db/id 1 :task/description "buy milk"} ; from server
+       {:db/id 2 :task/description "exercise"}
+       {:db/id +3 :task/description "feed baby"}])
+    (to-diff
+      #_[{:db/id -3 :task/description "feed baby"}])) ; from client
+  := []
+  )
+
+(tests
+  "we can pretend Flow is List for these pseudocode examples"
+  ; right-most takes precedence
+  ; optimistic information takes precedence
+  (e/def records (todos-query db)) 
+  (def server-diffs (e/reconcile stable-kf (e/fn [] records)))
+  (mix-diffs server-diffs pending-client-view-diffs) := []
+  
+  (mix-diffs [] [])
+  := []
+  )
+
+
+; discrete flow is a trait, not a type

@@ -538,7 +538,10 @@ fresh event."
      (hyperfiddle.electric/watch !state#)))
 
 (defn reconcile [kf <xs])
-(defn par [F >dxs])
+(defmacro expand-by [kf & body]
+  `(new (reconcile kf (e/fn [] ~@body))))
+
+#_(defn par [F >dxs])
 
 (defn map-by-impl [F kf <xs]
   (maintain-vec (par F (reconcile kf <xs))))

@@ -550,18 +550,19 @@
                         (?add-source-map e form))]
               (reduce (fn [ts nx] (analyze nx e env ts)) ts2 refs))
       (new) (let [[_ f & args] form
-                  {::keys [lang sym type]} (if (symbol? f) (resolve-symbol f env) {::type ::var, ::sym f})]
+                  {::keys [lang sym type]} (if (symbol? f) (resolve-symbol f env) {::type ::node, ::sym f})]
               (case type
-                ::class (let [e (->id), ce (->id), cce (->id)]
-                          (reduce (fn [ts arg] (analyze arg e env ts))
-                            (-> ts (ts/add {:db/id e, ::parent pe, ::type ::ap})
-                              (ts/add {:db/id ce, ::parent e, ::type ::pure})
-                              (ts/add {:db/i cce, ::parent ce, ::type ::literal,
-                                       ::v (let [gs (repeatedly (count args) gensym)]
-                                             `(fn [~@gs] (new ~f ~@gs)))}))
-                            args))
-                #_else (recur (if (seq args) `(binding [~@(interleave (range) args)] (::call ~f)) `(::call ~f))
-                        pe env ts)))
+                (::node ::local ::let-ref)
+                (recur (if (seq args) `(binding [~@(interleave (range) args)] (::call ~f)) `(::call ~f)) pe env ts)
+
+                #_else (let [e (->id), ce (->id), cce (->id)]
+                         (reduce (fn [ts arg] (analyze arg e env ts))
+                           (-> ts (ts/add {:db/id e, ::parent pe, ::type ::ap})
+                             (ts/add {:db/id ce, ::parent e, ::type ::pure})
+                             (ts/add {:db/i cce, ::parent ce, ::type ::literal,
+                                      ::v (let [gs (repeatedly (count args) gensym)]
+                                            `(fn [~@gs] (new ~f ~@gs)))}))
+                           args))))
       (binding clojure.core/binding) (let [[_ bs bform] form, gs (repeatedly (/ (count bs) 2) gensym)]
                                        (recur (if (seq bs)
                                                 `(let* [~@(interleave gs (take-nth 2 (next bs)))]

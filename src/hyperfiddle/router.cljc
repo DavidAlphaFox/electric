@@ -440,16 +440,24 @@
     (normalize {x nil})
     (normalize x)))
 
+(e/defn* LinkClickHandler [path]
+  (e/client
+    (let [!path (atom nil)]
+      (reset! !path (into hyperfiddle.router/path path)) ; prevents event handler to remount on path change
+      (new (link-click-handler dom/node #(deref !path))))))
+
+(e/defn* LinkHref [path]
+  (let [[path' value] (split-link-path path)
+        value (normalize-route-value value)]
+    (encode (Route-for. path' value))))
+
 (e/defn Link
   ([path Body]
    (e/client
-     (let [[path' value] (split-link-path path)
-           value (normalize-route-value value)]
-       (dom/a
-         (let [!path (atom nil)]
-           (reset! !path (into hyperfiddle.router/path path)) ; prevents event handler to remount on path change
-           (new (link-click-handler dom/node #(deref !path))))
-         (dom/props {::dom/href (encode (Route-for. path' value))})
+     (dom/a
+       (dom/props {:href (LinkHref. path)})
+       (LinkClickHandler. path)
+       (let [[path' _value] (split-link-path path)]
          (binding [current-route? (Current-route?. path')]
            (new Body)))))))
 

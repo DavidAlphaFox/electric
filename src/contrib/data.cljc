@@ -1,8 +1,19 @@
 (ns contrib.data
+  (:refer-clojure :exclude [select-keys])
   (:require clojure.math
             [clojure.datafy :refer [datafy]] ; todo remove
             [hyperfiddle.rcf :refer [tests]])
   #?(:cljs (:require-macros [contrib.data :refer [auto-props]])))
+
+(defn select-keys
+  "Retrocompatible with `clojure.core/select-keys`, but allows filtering a map by key with a custom `pred` predicate.
+  If pred is:
+  - a collection :: select-keys as `clojure.core/select-keys`
+  - a predicate  :: keep the map entry if (pred key) returns true"
+  [map pred]
+  (if (coll? pred)
+    (clojure.core/select-keys map pred)
+    (reduce-kv (fn [r k _v] (if (pred k) r (dissoc r k))) map map)))
 
 (defn qualify
   "Qualify a keyword with a namespace. If already qualified, leave kw untouched. Nil-safe.
@@ -63,7 +74,7 @@
 (defn select-ns
   "Like `select-keys` but select all namespaced keys by ns."
   [ns map]
-  (into (empty map) (filter (fn [[k _v]] (has-ns? ns k))) map))
+  (select-keys map #(has-ns? ns %)))
 
 (defn -auto-props "qualify any unqualified keys to the current ns and then add qualified defaults"
   [ns props defaults-qualified]
@@ -344,3 +355,35 @@
   "directory is omitted if there are no children matching keep?"
   ((treelister [{:dir "x" :children [{:file "a"} {:file "b"}]}] :children (fn [v needle] (-> v :file #{needle}))) "nope")
   (count (vec *1)) := 0)
+
+(defn distinct-by
+  "Returns a lazy sequence of the elements of coll with duplicates removed according to the value returned by `keyfn`.
+  Returns a stateful transducer when no collection is provided."
+  ([keyfn]
+   (fn [rf]
+     (let [seen (volatile! #{})]
+       (fn
+         ([] (rf))
+         ([result] (rf result))
+         ([result input]
+          (if (contains? @seen (keyfn input))
+            result
+            (do (vswap! seen conj (keyfn input))
+                (rf result input))))))))
+  ([keyfn coll]
+   (let [step (fn step [xs seen]
+                (lazy-seq
+                  ((fn [[f :as xs] seen]
+                     (when-let [s (seq xs)]
+                       (if (contains? seen (keyfn f))
+                         (recur (rest s) seen)
+                         (cons f (step (rest s) (conj seen (keyfn f)))))))
+                   xs seen)))]
+     (step coll #{}))))
+
+
+(comment
+  (distinct [[0 :a] [0 :b]])                     := '([0 :a] [0 :b])
+  (distinct-by first [[0 :a] [0 :b]])            := '([0 :a])
+  (sequence (distinct-by first) [[0 :a] [0 :b]]) := '([0 :a])
+  )

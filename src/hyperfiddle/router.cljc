@@ -431,7 +431,9 @@
        (m/reductions {} nil
          (e/listen> node "click"
            (fn [e] ; todo e/for-event-pending-switch? Or missionary itself
-             (on-link-click (next-route-f) node e)))))))
+             (if (= "true" (.getAttribute (.-target e) "disabled"))
+               (.preventDefault e)
+               (on-link-click (next-route-f) node e))))))))
 
 (e/def current-route? false)
 

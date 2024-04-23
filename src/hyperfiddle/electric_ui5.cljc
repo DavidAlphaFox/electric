@@ -135,7 +135,7 @@ through its edit lifecycle (dirty -> pending -> completed)."
         (let [[pending-view-diffs x! dx!] (CreateController. stable-kf CreateForm)]
           ; todo xdx can be a form monitor, not just single field
           ; emit isolated txs that race unless a popover batches them
-          (->> (e/server (e/expand-by stable-kf records)) ; legal transfer!
+          (->> (e/server (e/diff-by stable-kf records)) ; legal transfer!
             (mx/mix-diffs >pending-view-diffs) ; TODO: local info must take precedence
             (e/par EditForm) ; list of fields
             maintain-vec ; list of forms is a list-list-fields

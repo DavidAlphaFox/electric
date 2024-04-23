@@ -38,14 +38,14 @@
     (dom/div (dom/style {:display "flex", :align-items "center"})
      (amb
        (ui5/Field.
-         :record (get ?record :task/status) ; todo entity api
+         :record {:task/status (get ?record :task/status)} ; todo entity api
          :Control ui5/Checkbox
          :parse {:done true, :active false}
          :unparse {true :done, false :active}
          :edit (fn [v] [{:db/id (:db/id ?record) :task/status v}
                         [{:db/id (:db/id ?record) :task/status v}]]))
        (ui5/Field.
-         :record  (get ?record :task/description)
+         :record  {:task/description (get ?record :task/description)}
          :Control ui5/Input
          :edit (fn [v] [{:task/description v}
                         [{:db/id (:db/id ?record) :task/description v}]]))))))
@@ -102,6 +102,7 @@ on submit"
         (FailRate. 3 10))
 
       (let [edits (Page.)] ; accidental transfer
+        ; careful, rules of pending need to be stable to not repeat txns. e.g. x -> pending -> x can repeat
         (e/server
           (new (m/ap
                  (let [tx-report (m/?< ui5/>tx-report)]

@@ -7,7 +7,7 @@
   (m/ap
     (let [edits (->> (m/?< <edit-monitor) ; sparse
                   (remove nil?)) ; most fields are not firing concurrently
-          [x tx] (m/?> ##Inf (m/seed edits))] ; serialize them?
+          [x tx] (m/?> ##Inf (apply m/seed edits))] ; serialize them?
       (m/amb
         #_(assoc old-tx-report ::pending tx) ; for what purpose? & do on client?
         (try

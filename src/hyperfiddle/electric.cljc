@@ -542,12 +542,24 @@ Quoting it directly is idiomatic as well."
 
 (hyperfiddle.electric/def http-request "Bound to the HTTP request of the page in which the current Electric program is running." nil)
 
-(cc/defn -snapshot [flow] (->> flow (m/eduction (contrib.data/take-upto (complement #{r/pending})))))
+(cc/defn -snapshot
+  ([flow] (->> flow (m/eduction (contrib.data/take-upto (complement #{r/pending}))))) ; freezes after first non-pending
+  ([flow sampler] (-snapshot flow sampler r/pending))
+  ([flow sampler init]
+   (m/reductions {} init
+     (m/eduction (contrib.data/pause-after #{r/pending})
+       (mx/mix
+         flow
+         (m/eduction (comp (map boolean) (dedupe) (filter identity)
+                       (map (constantly :contrib.data/resume)))
+           sampler))))))
 
 (defmacro snapshot
   "Snapshots the first non-Pending value of reactive value `x` and freezes it,
 inhibiting all further reactive updates."
-  [x] `(check-electric snapshot (new (-snapshot (hyperfiddle.electric/fn* [] ~x)))))
+  ([x] `(check-electric snapshot (new (-snapshot (hyperfiddle.electric/fn* [] ~x)))))
+  ([x sampler] `(check-electric snapshot (new (-snapshot (hyperfiddle.electric/fn* [] (identity ~x)) (hyperfiddle.electric/fn* [] (identity ~sampler))))))
+  ([x sampler init] `(check-electric snapshot (new (-snapshot (hyperfiddle.electric/fn* [] (identity ~x)) (hyperfiddle.electric/fn* [] (identity ~sampler)) (snapshot ~init))))))
 
 (cc/defn ->Object [] #?(:clj (Object.) :cljs (js/Object.))) ; private
 

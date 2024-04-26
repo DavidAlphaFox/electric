@@ -214,7 +214,11 @@
 
 ;; https://github.com/weavejester/medley/blob/master/src/medley/core.cljc
 ;; https://clojure.atlassian.net/browse/CLJ-1451
-(defn take-upto [pred]
+(defn take-upto
+  "Returns a lazy sequence of successive items from coll up to and including
+the first item for which `(pred item)` returns true. Returns a transducer
+when no collection is provided."
+  [pred]
   (fn [rf] 
     (fn 
       ([] (rf))
@@ -223,6 +227,53 @@
 
 (tests
   (into [] (take-upto odd?) [2 4 6 8 9 10 12 14]) := [2 4 6 8 9])
+
+(defn pause-after
+  "Return a lazy sequence of successive items from coll up to and including the
+  first item for which `(pred item)` returns false, then stop returning item
+  until `::resume` is seen. When `::resume` is seen, resume returning successive
+  items up to and including the first item for which `(pred item)` returns false.
+  This can be compared to a resumable `take-upto`."
+  ([pred]
+   (fn [rf]
+     (let [!sample? (volatile! nil)
+           !last    (volatile! ::nil)]
+       (fn rec
+         ([] (rf))
+         ([result] (rf result))
+         ([result value]
+          (let [sample? @!sample?
+                last    @!last]
+            (if (= ::resume value)
+              (do (vreset! !sample? true)
+                  (if (or sample? (= ::nil last))
+                    result
+                    (rec result last)))
+              (do (vreset! !last value)
+                  (if sample?
+                    (if (pred value)
+                      (rf result value)
+                      (do (vreset! !sample? false)
+                          (rf result value)))
+                    result)))))))))
+  ([pred coll] (sequence (pause-after pred) coll)))
+
+(tests
+  (pause-after #{::pending} [])                             := ()
+  (pause-after #{::pending} [::resume])                     := ()
+  (pause-after #{::pending} [1])                            := ()
+  (pause-after #{::pending} [1 ::resume])                   := '(1)
+  (pause-after #{::pending} [::pending])                    := '()
+  (pause-after #{::pending} [::pending ::resume])           := '(::pending)
+  (pause-after #{::pending} [::pending ::resume ::resume])  := '(::pending)
+  (pause-after #{::pending} [::pending ::resume ::pending]) := '(::pending ::pending)
+  (pause-after #{::pending} [::pending 1 ::resume])         := '(1)
+  (pause-after #{::pending}
+    [::pending ::pending ::resume ::pending 1])             := '(::pending ::pending 1)
+  (pause-after #{::pending} [1 ::resume 2])                 := '(1)
+  (pause-after #{::pending} [1 ::pending 2 ::resume 3])     := '(2)
+  (pause-after #{::pending} [1 ::pending ::resume 2])       := '(::pending 2)
+  )
 
 (defn round-floor [n base] (* base (clojure.math/floor (/ n base))))
 

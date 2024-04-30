@@ -94,15 +94,31 @@
       (dbg/error (select-debug-info debug-info) (Failure. error) context))
     (dbg/error (select-debug-info debug-info) (Failure. error))))
 
-(defn latest-apply [debug-info & args]
+(defn latest-apply-old [debug-info & args]
   (ca/check (partial every? some?) args debug-info)
   (apply m/latest
     (fn [f & args]
-      (if-let [err (apply failure f args)]
-        (dbg/error (select-debug-info debug-info) err)
-        (try (apply f args)
-             (catch #?(:clj Throwable :cljs :default) e
-               (handle-apply-error debug-info args e)))))
+      (try (apply f args)
+           (catch #?(:clj Throwable :cljs :default) e
+             (handle-apply-error debug-info args e))))
+    args)
+  )
+
+(defn latest-apply [debug-info & args]
+  (ca/check (partial every? some?) args debug-info)
+  (apply m/latest
+    (let [c (object-array [::none nil nil])]
+      (fn [f & args]
+        (if-let [err (apply failure f args)]
+          (dbg/error (select-debug-info debug-info) err)
+          (let [prev (aget c 0), all (cons f args)]
+            (aset c 0 all)
+            (if (= prev all)
+              (case (aget c 1) ::ok (aget c 2) (handle-apply-error debug-info args (aget c 2)))
+              (try (let [v (aset c 2 (apply f args))] (aset c 1 ::ok) v)
+                   (catch #?(:clj Throwable :cljs :default) e
+                     (aset c 1 ::ex) (aset c 2 e)
+                     (handle-apply-error debug-info args e))))))))
     args))
 
 (defn causal [debug-info x y]
@@ -701,12 +717,29 @@
     (aset tier tier-slot-vars (atom @vars))
     (aset ^objects (aget frame frame-slot-variables) (int slot)
       (m/signal!
-        (m/cp (try (let [<x (m/?< <<x)]
-                     (cond (failure <x) <x
-                           (nil? <x)    (Failure. (ex-info "called `new` on nil" {}))
-                           :else        (m/?< (with tier <x))))
-                   (catch #?(:clj Throwable :cljs :default) e
-                     (Failure. e))))))))
+        ;; F S - kill failed branch, return success branch
+        ;; F F - kill failed branch, return new failed branch
+        ;; S F - keep success branch alive, return failed branch
+        ;; S S - kill success branch, return new success branch
+        ;; S1 S1 - noop
+        ;; S1 S2 - kill S1, return S2
+        ;; S1 F S1 - S1, keep S1 & return F, kill F & reuse S1
+        (m/ap (let [s (object-array 2)]
+                (try (let [<x (m/?> 2 <<x)]
+                       (cond (nil? <x)    (do (aset s (int 0) false) (Failure. (ex-info "called `new` on nil" {})))
+                             (failure <x) (do (aset s (int 0) false) <x)
+                             :else        (do (aset s (int 0) true)
+                                              (if (= (aget s (int 1)) <x)
+                                                (m/amb)
+                                                (let [v (m/?< (with tier (aset s (int 1) <x)))]
+                                                  (if (aget s (int 0)) v (m/amb)))))))
+                     (catch #?(:clj Throwable :cljs :default) e (aset s (int 0) false) (Failure. e)))))
+        #_(m/cp (try (let [<x (m/?< <<x)]
+                       (cond (failure <x) <x
+                             (nil? <x)    (Failure. (ex-info "called `new` on nil" {}))
+                             :else        (m/?< (with tier <x))))
+                     (catch #?(:clj Throwable :cljs :default) e
+                       (Failure. e))))))))
 
 (defn source [^objects frame vars]
   (let [slot (aswap frame frame-slot-last-source inc)
